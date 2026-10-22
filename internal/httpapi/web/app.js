@@ -7,6 +7,8 @@ const priorities = {low: 'Низкий приоритет', medium: 'Средн�
 const errorMessages = {
   queue_full: 'Очередь заполнена. Попробуйте чуть позже.',
   ticket_conflict: 'Не удалось сохранить: обращение ещё обрабатывается или запрос уже использован.',
+  review_conflict: 'Ответ изменён в другой вкладке. Ваш текст остался в форме. Скопируйте его при необходимости и загрузите сохранённую версию.',
+  invalid_expected_revision: 'Обновите страницу перед сохранением ответа.',
   internal_error: 'Не удалось выполнить операцию. Попробуйте ещё раз.',
   invalid_ticket_id: 'Некорректный номер обращения.',
   ticket_not_found: 'Обращение не найдено.',
@@ -19,6 +21,13 @@ const state = {
   detailSignature: '',
   listSignature: '',
   dirty: false,
+  saving: false,
+  reviewRevision: 0,
+  historyKey: '',
+  historyGeneration: 0,
+  historyBefore: 0,
+  historyLoaded: false,
+  historyLoading: false,
   offset: 0,
   refreshing: false,
   refreshRequested: false,
@@ -41,7 +50,11 @@ async function request(path, options = {}) {
   } catch {
     throw new Error('Сервер вернул непонятный ответ. Попробуйте обновить страницу.');
   }
-  if (!response.ok) throw new Error(errorMessages[data.error] || data.error || 'Ошибка запроса');
+  if (!response.ok) {
+    const error = new Error(errorMessages[data.error] || data.error || 'Ошибка запроса');
+    error.code = data.error;
+    throw error;
+  }
   return data;
 }
 
@@ -65,6 +78,10 @@ function statusBadge(ticket) {
 }
 
 function canLeaveDraft() {
+  if (state.saving) {
+    notice('Дождитесь сохранения ответа.', 'error');
+    return false;
+  }
   return !state.dirty || window.confirm('Есть несохранённые изменения в ответе. Закрыть черновик?');
 }
 
@@ -129,7 +146,7 @@ async function refresh() {
       const selected = state.selected;
       const ticket = await request('/api/v1/tickets/' + selected);
       const signature = JSON.stringify(ticket);
-      if (selected === state.selected && !state.dirty && signature !== state.detailSignature) {
+      if (selected === state.selected && !state.dirty && !state.saving && signature !== state.detailSignature) {
         renderDetail(ticket);
         state.detailSignature = signature;
       }
@@ -178,19 +195,89 @@ function renderDetail(ticket) {
     : 'Сообщение сохранено. Помощник разбирает обращение — результат появится здесь.';
 
   if (!ticket.analysis) return;
+  state.reviewRevision = ticket.review_revision;
+  $('reload-review').hidden = true;
   $('summary').textContent = ticket.analysis.summary;
   $('priority').textContent = priorities[ticket.analysis.priority];
   $('priority').dataset.priority = ticket.analysis.priority;
   $('priority-reason').textContent = ticket.analysis.priority_reason;
   $('original-reply').textContent = ticket.analysis.draft_reply;
+  $('original-category').textContent = 'Категория модели: ' + categories[ticket.analysis.category];
   $('review-category').value = ticket.review?.category || ticket.analysis.category;
   $('review-reply').value = ticket.review?.draft_reply || ticket.analysis.draft_reply;
-  $('review-status').textContent = ticket.review?.approved ? 'Подтверждён ✓' : 'Черновик';
+  $('review-status').textContent = (ticket.review?.approved ? 'Подтверждён ✓' : 'Черновик')
+    + (ticket.review_revision ? ' · версия ' + ticket.review_revision : '');
   $('review-status').dataset.state = ticket.review?.approved ? 'approved' : 'draft';
   $('usage').textContent = ticket.usage.model === 'demo-rules'
     ? 'Демо: анализ по ключевым словам, без обращения к модели.'
-    : ticket.usage.model + ' · Токены: ' + ticket.usage.input_tokens + ' вход / ' + ticket.usage.output_tokens + ' выход';
+    : ticket.usage.model.split('/').pop() + ' · Токены: ' + ticket.usage.input_tokens + ' вход / ' + ticket.usage.output_tokens + ' выход';
+  const historyKey = ticket.id + ':' + ticket.review_revision;
+  if (state.historyKey !== historyKey) {
+    state.historyKey = historyKey;
+    state.historyGeneration++;
+    state.historyBefore = 0;
+    state.historyLoaded = false;
+    state.historyLoading = false;
+    $('history-list').replaceChildren();
+    $('history-more').hidden = true;
+    $('history-status').textContent = 'Откройте историю, чтобы посмотреть сохранённые версии.';
+    if ($('review-history').open) loadHistory();
+  }
 }
+
+async function loadHistory(older = false) {
+  if (state.historyLoading || !state.selected || (!older && state.historyLoaded)) return;
+  const id = state.selected;
+  const generation = state.historyGeneration;
+  state.historyLoading = true;
+  $('history-more').disabled = true;
+  $('history-status').textContent = 'Загрузка истории…';
+  try {
+    const params = new URLSearchParams({limit: '10'});
+    if (older && state.historyBefore) params.set('before_revision', state.historyBefore);
+    const page = await request('/api/v1/tickets/' + id + '/history?' + params);
+    if (id !== state.selected || generation !== state.historyGeneration) return;
+    for (const entry of page.items) {
+      const item = element('details', undefined, 'history-entry');
+      const action = entry.kind === 'imported' ? 'Перенесено при обновлении'
+        : entry.review.approved ? 'Ответ подтверждён' : 'Черновик сохранён';
+      item.append(element('summary', 'Версия ' + entry.revision + ' · ' + action));
+      item.append(element('p', new Date(entry.created_at).toLocaleString('ru-RU')
+        + ' · ' + categories[entry.review.category], 'muted'));
+      item.append(element('p', entry.review.draft_reply, 'preserve'));
+      $('history-list').append(item);
+    }
+    state.historyBefore = page.next_before_revision;
+    state.historyLoaded = true;
+    $('history-more').textContent = 'Показать более ранние версии';
+    $('history-more').hidden = !state.historyBefore;
+    $('history-status').textContent = $('history-list').children.length
+      ? 'Исходный ответ модели хранится отдельно выше. Здесь — сохранения оператора.'
+      : 'Правок пока нет. Первое сохранение появится здесь.';
+  } catch (error) {
+    if (id !== state.selected || generation !== state.historyGeneration) return;
+    $('history-status').textContent = 'Не удалось загрузить историю. ' + error.message;
+    $('history-more').textContent = 'Повторить загрузку';
+    $('history-more').hidden = false;
+  } finally {
+    if (generation === state.historyGeneration) {
+      state.historyLoading = false;
+      $('history-more').disabled = false;
+    }
+  }
+}
+
+$('review-history').addEventListener('toggle', () => {
+  if ($('review-history').open) loadHistory();
+});
+$('history-more').addEventListener('click', () => loadHistory(state.historyLoaded));
+$('reload-review').addEventListener('click', () => {
+  if (!canLeaveDraft()) return;
+  state.dirty = false;
+  state.detailSignature = '';
+  notice('');
+  refresh();
+});
 
 function openCreateForm() {
   if (!$('create-dialog').open) $('create-dialog').showModal();
@@ -250,31 +337,41 @@ for (const id of ['title', 'message']) {
 }
 
 async function saveReview(approved) {
-  if (!$('review-form').reportValidity()) return;
+  if (state.saving || !$('review-form').reportValidity()) return;
   const id = state.selected;
+  state.saving = true;
   $('save-review').disabled = true;
   $('approve-review').disabled = true;
+  $('review-category').disabled = true;
+  $('review-reply').disabled = true;
   try {
-    await request('/api/v1/tickets/' + id + '/review', {
+    const saved = await request('/api/v1/tickets/' + id + '/review', {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         category: $('review-category').value,
         draft_reply: $('review-reply').value.trim(),
-        approved
+        approved,
+        expected_revision: state.reviewRevision
       })
     });
     if (state.selected === id) {
       state.dirty = false;
       state.detailSignature = '';
+      renderDetail(saved);
     }
     notice(approved ? 'Ответ подтверждён.' : 'Черновик сохранён.');
     await refresh();
   } catch (error) {
+    state.dirty = true;
+    if (error.code === 'review_conflict') $('reload-review').hidden = false;
     notice('Не удалось сохранить ответ. ' + error.message, 'error');
   } finally {
+    state.saving = false;
     $('save-review').disabled = false;
     $('approve-review').disabled = false;
+    $('review-category').disabled = false;
+    $('review-reply').disabled = false;
   }
 }
 

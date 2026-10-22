@@ -27,7 +27,8 @@ type Repository interface {
 	Create(context.Context, ticket.Input, string) (ticket.Ticket, bool, error)
 	Get(context.Context, string) (ticket.Ticket, error)
 	List(context.Context, string, string, int, int) ([]ticket.Ticket, error)
-	Review(context.Context, string, ticket.Review) (ticket.Ticket, error)
+	Review(context.Context, string, ticket.Review, int64) (ticket.Ticket, error)
+	History(context.Context, string, int64, int) ([]ticket.ReviewEvent, error)
 	Ping(context.Context) error
 }
 
@@ -47,6 +48,7 @@ func New(store Repository, log *slog.Logger, provider string) http.Handler {
 	mux.HandleFunc("GET /api/v1/tickets", a.list)
 	mux.HandleFunc("GET /api/v1/tickets/{id}", a.get)
 	mux.HandleFunc("PATCH /api/v1/tickets/{id}/review", a.review)
+	mux.HandleFunc("GET /api/v1/tickets/{id}/history", a.history)
 	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"provider": provider}) })
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -162,20 +164,62 @@ func (a *API) review(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_ticket_id")
 		return
 	}
-	var review ticket.Review
-	if !decode(w, r, &review) {
+	var input struct {
+		ticket.Review
+		ExpectedRevision *int64 `json:"expected_revision"`
+	}
+	if !decode(w, r, &input) {
 		return
 	}
-	if err := review.Validate(); err != nil {
+	if input.ExpectedRevision == nil || *input.ExpectedRevision < 0 {
+		problem(w, 400, "invalid_expected_revision")
+		return
+	}
+	if err := input.Review.Validate(); err != nil {
 		problem(w, 400, err.Error())
 		return
 	}
-	t, err := a.store.Review(r.Context(), id, review)
+	t, err := a.store.Review(r.Context(), id, input.Review, *input.ExpectedRevision)
 	if err != nil {
 		a.failure(w, err)
 		return
 	}
 	write(w, 200, t)
+}
+
+func (a *API) history(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !idPattern.MatchString(id) {
+		problem(w, 400, "invalid_ticket_id")
+		return
+	}
+	query := r.URL.Query()
+	limit, before := 10, int64(0)
+	var err error
+	if query.Has("limit") {
+		limit, err = strconv.Atoi(query.Get("limit"))
+		if err != nil || limit < 1 || limit > 50 {
+			problem(w, 400, "invalid_limit")
+			return
+		}
+	}
+	if query.Has("before_revision") {
+		before, err = strconv.ParseInt(query.Get("before_revision"), 10, 64)
+		if err != nil || before < 1 {
+			problem(w, 400, "invalid_history_cursor")
+			return
+		}
+	}
+	items, err := a.store.History(r.Context(), id, before, limit)
+	if err != nil {
+		a.failure(w, err)
+		return
+	}
+	var next int64
+	if len(items) == limit {
+		next = items[len(items)-1].Revision
+	}
+	write(w, 200, map[string]any{"items": items, "next_before_revision": next})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dest any) bool {
@@ -244,6 +288,8 @@ func (a *API) failure(w http.ResponseWriter, err error) {
 		problem(w, 404, "ticket_not_found")
 	case errors.Is(err, ticket.ErrConflict):
 		problem(w, 409, "ticket_conflict")
+	case errors.Is(err, ticket.ErrReviewConflict):
+		problem(w, 409, "review_conflict")
 	case errors.Is(err, ticket.ErrQueueFull):
 		w.Header().Set("Retry-After", "10")
 		problem(w, 429, "queue_full")

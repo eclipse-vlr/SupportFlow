@@ -16,6 +16,9 @@ import (
 //go:embed schema.sql
 var schema string
 
+//go:embed migrations/002_review_history.sql
+var reviewHistorySchema string
+
 type Store struct {
 	pool      *pgxpool.Pool
 	maxQueued int
@@ -23,8 +26,8 @@ type Store struct {
 
 func New(pool *pgxpool.Pool, maxQueued int) *Store { return &Store{pool: pool, maxQueued: maxQueued} }
 
-// Migrate creates the initial schema under a transaction-scoped migration lock.
-// Subsequent schema versions must use explicit versioned migrations.
+// Migrate applies versioned changes under a transaction-scoped migration lock.
+// Databases created before migration tracking are adopted as version 1.
 func (s *Store) Migrate(ctx context.Context) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -34,20 +37,41 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(78345901)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, schema); err != nil {
+	if _, err = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return err
+	}
+	var current int
+	if err = tx.QueryRow(ctx, "SELECT COALESCE(max(version),0) FROM schema_migrations").Scan(&current); err != nil {
+		return err
+	}
+	migrations := []string{schema, reviewHistorySchema}
+	if current > len(migrations) {
+		return errors.New("database schema is newer than this application")
+	}
+	for index, migration := range migrations {
+		version := index + 1
+		if version <= current {
+			continue
+		}
+		if _, err = tx.Exec(ctx, migration); err != nil {
+			return fmt.Errorf("apply migration %d: %w", version, err)
+		}
+		if _, err = tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", version); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
 
 const columns = `id::text, title, message, status, attempts, analysis, review,
-model, input_tokens, output_tokens, last_error, created_at, updated_at`
+model, input_tokens, output_tokens, last_error, created_at, updated_at, review_revision`
 
 func scan(row pgx.Row) (ticket.Ticket, error) {
 	var t ticket.Ticket
 	var analysis, review []byte
 	err := row.Scan(&t.ID, &t.Title, &t.Message, &t.Status, &t.Attempts, &analysis, &review,
-		&t.Usage.Model, &t.Usage.InputTokens, &t.Usage.OutputTokens, &t.LastError, &t.CreatedAt, &t.UpdatedAt)
+		&t.Usage.Model, &t.Usage.InputTokens, &t.Usage.OutputTokens, &t.LastError, &t.CreatedAt, &t.UpdatedAt, &t.ReviewRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ticket.ErrNotFound
 	}
@@ -125,19 +149,78 @@ AND ($2='' OR status=$2) ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4`, c
 	return items, rows.Err()
 }
 
-func (s *Store) Review(ctx context.Context, id string, review ticket.Review) (ticket.Ticket, error) {
+// Review commits the latest snapshot and its history event together. A stale
+// revision cannot replace another edit; retrying an identical save is a no-op.
+func (s *Store) Review(ctx context.Context, id string, review ticket.Review, expectedRevision int64) (ticket.Ticket, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ticket.Ticket{}, err
+	}
+	defer tx.Rollback(ctx)
+	current, err := scan(tx.QueryRow(ctx, "SELECT "+columns+" FROM tickets WHERE id=$1 FOR UPDATE", id))
+	if err != nil {
+		return ticket.Ticket{}, err
+	}
+	if current.Status != "completed" {
+		return ticket.Ticket{}, ticket.ErrConflict
+	}
+	unchanged := current.Review != nil && *current.Review == review
+	if expectedRevision != current.ReviewRevision {
+		if unchanged && expectedRevision == current.ReviewRevision-1 {
+			return current, tx.Commit(ctx)
+		}
+		return ticket.Ticket{}, ticket.ErrReviewConflict
+	}
+	if unchanged {
+		return current, tx.Commit(ctx)
+	}
 	data, err := json.Marshal(review)
 	if err != nil {
 		return ticket.Ticket{}, err
 	}
-	t, err := scan(s.pool.QueryRow(ctx, "UPDATE tickets SET review=$2,updated_at=now() WHERE id=$1 AND status='completed' RETURNING "+columns, id, data))
-	if !errors.Is(err, ticket.ErrNotFound) {
+	t, err := scan(tx.QueryRow(ctx, "UPDATE tickets SET review=$2,review_revision=review_revision+1,updated_at=now() WHERE id=$1 RETURNING "+columns, id, data))
+	if err != nil {
 		return t, err
 	}
-	if _, err = s.Get(ctx, id); err != nil {
+	kind := "draft_saved"
+	if review.Approved {
+		kind = "approved"
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO ticket_review_history (ticket_id,revision,kind,review)
+VALUES ($1,$2,$3,$4)`, id, t.ReviewRevision, kind, data); err != nil {
 		return ticket.Ticket{}, err
 	}
-	return ticket.Ticket{}, ticket.ErrConflict
+	return t, tx.Commit(ctx)
+}
+
+// History returns saved versions in descending order using a revision cursor.
+func (s *Store) History(ctx context.Context, id string, before int64, limit int) ([]ticket.ReviewEvent, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM tickets WHERE id=$1)", id).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ticket.ErrNotFound
+	}
+	rows, err := s.pool.Query(ctx, `SELECT revision,kind,review,created_at FROM ticket_review_history
+WHERE ticket_id=$1 AND ($2::bigint=0 OR revision<$2) ORDER BY revision DESC LIMIT $3`, id, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ticket.ReviewEvent, 0)
+	for rows.Next() {
+		var event ticket.ReviewEvent
+		var data []byte
+		if err = rows.Scan(&event.Revision, &event.Kind, &data, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(data, &event.Review); err != nil {
+			return nil, err
+		}
+		items = append(items, event)
+	}
+	return items, rows.Err()
 }
 
 // Claim uses row locks to give one worker a lease. attempts is a fencing token:
@@ -160,7 +243,7 @@ FROM next WHERE t.id=next.id RETURNING `+qualifiedColumns(), maxAttempts, lease.
 
 func qualifiedColumns() string {
 	return `t.id::text,t.title,t.message,t.status,t.attempts,t.analysis,t.review,
-t.model,t.input_tokens,t.output_tokens,t.last_error,t.created_at,t.updated_at`
+t.model,t.input_tokens,t.output_tokens,t.last_error,t.created_at,t.updated_at,t.review_revision`
 }
 
 func (s *Store) Complete(ctx context.Context, t ticket.Ticket, a ticket.Analysis, u ticket.Usage) error {

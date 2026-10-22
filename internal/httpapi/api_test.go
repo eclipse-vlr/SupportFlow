@@ -12,7 +12,7 @@ import (
 	"supportflow/internal/ticket"
 )
 
-type fakeRepository struct{ created int }
+type fakeRepository struct{ created, reviewed int }
 
 func (f *fakeRepository) Create(_ context.Context, i ticket.Input, _ string) (ticket.Ticket, bool, error) {
 	f.created++
@@ -24,8 +24,41 @@ func (f *fakeRepository) Get(context.Context, string) (ticket.Ticket, error) {
 func (f *fakeRepository) List(context.Context, string, string, int, int) ([]ticket.Ticket, error) {
 	return []ticket.Ticket{}, nil
 }
-func (f *fakeRepository) Review(context.Context, string, ticket.Review) (ticket.Ticket, error) {
-	return ticket.Ticket{}, ticket.ErrConflict
+func (f *fakeRepository) Review(context.Context, string, ticket.Review, int64) (ticket.Ticket, error) {
+	f.reviewed++
+	return ticket.Ticket{}, ticket.ErrReviewConflict
+}
+func (f *fakeRepository) History(context.Context, string, int64, int) ([]ticket.ReviewEvent, error) {
+	return []ticket.ReviewEvent{}, nil
+}
+
+func TestReviewRequiresExplicitRevision(t *testing.T) {
+	for _, tc := range []struct {
+		name, extra   string
+		status, calls int
+	}{
+		{"missing", "", 400, 0},
+		{"null", `,"expected_revision":null`, 400, 0},
+		{"negative", `,"expected_revision":-1`, 400, 0},
+		{"string", `,"expected_revision":"0"`, 400, 0},
+		{"stale", `,"expected_revision":0`, 409, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := &fakeRepository{}
+			handler := New(repository, slog.New(slog.NewTextHandler(io.Discard, nil)), "demo")
+			body := `{"category":"billing","draft_reply":"Ответ","approved":false` + tc.extra + `}`
+			req := httptest.NewRequest("PATCH", "/api/v1/tickets/a2d5027e-a00a-4000-8000-000000000000/review", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != tc.status || repository.reviewed != tc.calls {
+				t.Errorf("PATCH review(%s): status=%d calls=%d, want status=%d calls=%d", tc.name, response.Code, repository.reviewed, tc.status, tc.calls)
+			}
+			if tc.status == 409 && !strings.Contains(response.Body.String(), "review_conflict") {
+				t.Errorf("PATCH stale review body=%s, want review_conflict", response.Body.String())
+			}
+		})
+	}
 }
 func (f *fakeRepository) Ping(context.Context) error { return nil }
 
@@ -77,6 +110,10 @@ func TestAPIReadBoundaries(t *testing.T) {
 		{"/api/v1/tickets/invalid", 400}, {"/api/v1/tickets/a2d5027e-a00a-4000-8000-000000000000", 404},
 		{"/api/v1/tickets?limit=101", 400}, {"/api/v1/tickets?offset=-1", 400}, {"/api/v1/tickets?category=unknown", 400},
 		{"/api/v1/tickets", 200}, {"/healthz", 200}, {"/readyz", 200}, {"/", 200}, {"/app.js", 200},
+		{"/api/v1/tickets/invalid/history", 400},
+		{"/api/v1/tickets/a2d5027e-a00a-4000-8000-000000000000/history?limit=51", 400},
+		{"/api/v1/tickets/a2d5027e-a00a-4000-8000-000000000000/history?before_revision=0", 400},
+		{"/api/v1/tickets/a2d5027e-a00a-4000-8000-000000000000/history", 200},
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tc.path, nil))

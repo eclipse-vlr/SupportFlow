@@ -16,6 +16,15 @@ import (
 
 func testStore(t *testing.T, maxQueued int) *Store {
 	t.Helper()
+	s := testDatabase(t, maxQueued)
+	if err := s.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func testDatabase(t *testing.T, maxQueued int) *Store {
+	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL is required for PostgreSQL integration tests")
@@ -50,11 +59,7 @@ func testStore(t *testing.T, maxQueued int) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	s := New(pool, maxQueued)
-	if err = s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	return s
+	return New(pool, maxQueued)
 }
 
 func validAnalysis() ticket.Analysis {
@@ -76,7 +81,7 @@ func TestDurableWorkflowAndReview(t *testing.T) {
 	if _, _, err = s.Create(ctx, ticket.Input{Title: "Other", Message: "Other"}, "same-key"); !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("different payload: %v", err)
 	}
-	if _, err = s.Review(ctx, created.ID, ticket.Review{Category: "billing", DraftReply: "Ответ"}); !errors.Is(err, ticket.ErrConflict) {
+	if _, err = s.Review(ctx, created.ID, ticket.Review{Category: "billing", DraftReply: "Ответ"}, 0); !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("early review: %v", err)
 	}
 	claimed, err := s.Claim(ctx, 3, time.Minute)
@@ -91,7 +96,7 @@ func TestDurableWorkflowAndReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	review := ticket.Review{Category: "access", DraftReply: "Исправленный ответ", Approved: true}
-	done, err := s.Review(ctx, created.ID, review)
+	done, err := s.Review(ctx, created.ID, review, 0)
 	if err != nil || done.Review == nil || *done.Review != review || done.Analysis.Category != "billing" || done.Usage != u {
 		t.Fatalf("review: %+v %v", done, err)
 	}

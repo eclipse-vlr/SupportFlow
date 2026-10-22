@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("ticket not found")
-	ErrConflict  = errors.New("ticket state or idempotency conflict")
-	ErrQueueFull = errors.New("queue is full")
+	ErrNotFound       = errors.New("ticket not found")
+	ErrConflict       = errors.New("ticket state or idempotency conflict")
+	ErrQueueFull      = errors.New("queue is full")
+	ErrReviewConflict = errors.New("review revision changed")
 )
 
 const MaxMessageBytes = 16 * 1024
@@ -70,6 +71,14 @@ type Review struct {
 	Approved   bool   `json:"approved"`
 }
 
+// ReviewEvent is a saved snapshot; later edits never replace this version.
+type ReviewEvent struct {
+	Revision  int64     `json:"revision"`
+	Kind      string    `json:"kind"`
+	Review    Review    `json:"review"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func (r Review) Validate() error {
 	if !ValidCategory(r.Category) || strings.TrimSpace(r.DraftReply) == "" || len(r.DraftReply) > 12000 || !utf8.ValidString(r.DraftReply) || strings.ContainsRune(r.DraftReply, '\x00') {
 		return errors.New("invalid review category or reply")
@@ -80,12 +89,13 @@ func (r Review) Validate() error {
 type Ticket struct {
 	ID string `json:"id"`
 	Input
-	Status    string    `json:"status"`
-	Attempts  int       `json:"attempts"`
-	Analysis  *Analysis `json:"analysis"`
-	Review    *Review   `json:"review"`
-	Usage     Usage     `json:"usage"`
-	LastError string    `json:"last_error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Status         string    `json:"status"`
+	Attempts       int       `json:"attempts"`
+	Analysis       *Analysis `json:"analysis"`
+	Review         *Review   `json:"review"`
+	ReviewRevision int64     `json:"review_revision"`
+	Usage          Usage     `json:"usage"`
+	LastError      string    `json:"last_error,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
