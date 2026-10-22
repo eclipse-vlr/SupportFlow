@@ -37,6 +37,6 @@ docker compose --profile tools run --rm check
 
 Форматирование, `go vet`, тесты с `-race` и PostgreSQL. Платный API не вызывается.
 
-[Архитектура и API](docs/development.md) · [Оценка модели](docs/evaluation.md) · [Проверка MVP](docs/mvp.md)
+[Как устроено](docs/development.md) · [Алиса AI](docs/evaluation.md) · [Проверки](docs/mvp.md)
 
 Проект работает локально, без учётных записей. Очередь, обращения и история сохраняются в PostgreSQL. Остановка с сохранением данных: `docker compose down`.
