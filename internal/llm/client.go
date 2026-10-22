@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"supportflow/internal/knowledge"
 	"supportflow/internal/ticket"
 )
 
@@ -69,16 +70,27 @@ medium — проблема одного пользователя; low — об�
 Не обещай будущие действия команды: что она найдёт решение, передаст предложение,
 учтёт его в планах или обязательно сообщит новости. Не утверждай планы и обязательства компании.
 На предложение поблагодари без обещаний реализации; на благодарность ответь без лишних уточнений.
-Не проси пароли, полные данные карты или коды подтверждения. Ответ проверит человек.`
+Не проси пароли, полные данные карты или коды подтверждения. Ответ проверит человек.
+knowledge_articles — отобранные приложением учебные памятки для оператора. Используй только
+подходящие к обращению сведения из них; наличие статьи не доказывает причину проблемы.
+Если статей нет или в них нет ответа, уточни недостающие сведения без выдуманных правил.
+Не вставляй идентификаторы статей или технические ссылки в ответ клиенту.`
 
 func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analysis, ticket.Usage, error) {
+	sources, err := knowledge.Search(input.Title + "\n" + input.Message)
+	if err != nil {
+		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "knowledge_unavailable"}
+	}
 	properties := map[string]any{}
 	for _, name := range []string{"category", "summary", "priority", "priority_reason", "draft_reply"} {
 		properties[name] = map[string]any{"type": "string"}
 	}
 	properties["category"] = map[string]any{"type": "string", "enum": []string{"billing", "access", "technical", "other"}}
 	properties["priority"] = map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}}
-	userData, _ := json.Marshal(input)
+	userData, _ := json.Marshal(struct {
+		Ticket   ticket.Input    `json:"ticket"`
+		Articles []ticket.Source `json:"knowledge_articles"`
+	}{input, sources})
 	format := map[string]any{
 		"type": "json_schema", "name": "ticket_analysis", "strict": true,
 		"schema": map[string]any{"type": "object", "properties": properties, "additionalProperties": false,
@@ -166,14 +178,25 @@ func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analys
 			}
 		}
 	}
-	var analysis ticket.Analysis
+	// Decode only model-owned fields: provenance is supplied by the application.
+	var modelOutput struct {
+		Category       string `json:"category"`
+		Summary        string `json:"summary"`
+		Priority       string `json:"priority"`
+		PriorityReason string `json:"priority_reason"`
+		DraftReply     string `json:"draft_reply"`
+	}
 	decoder := json.NewDecoder(strings.NewReader(output.String()))
 	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&analysis); err != nil {
+	if err = decoder.Decode(&modelOutput); err != nil {
 		return ticket.Analysis{}, usage, &Error{Code: "provider_invalid_analysis"}
 	}
 	if err = decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return ticket.Analysis{}, usage, &Error{Code: "provider_invalid_analysis"}
+	}
+	analysis := ticket.Analysis{
+		Category: modelOutput.Category, Summary: modelOutput.Summary, Priority: modelOutput.Priority,
+		PriorityReason: modelOutput.PriorityReason, DraftReply: modelOutput.DraftReply, Sources: sources,
 	}
 	if err = analysis.Validate(); err != nil {
 		return ticket.Analysis{}, usage, &Error{Code: "provider_invalid_analysis"}

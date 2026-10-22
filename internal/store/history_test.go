@@ -2,6 +2,8 @@ package store
 
 import (
 	"errors"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,7 +47,7 @@ func TestHistoryPreservesDraftsAndApprovals(t *testing.T) {
 	}
 	draft.DraftReply = "Уточните дату и сумму списания."
 	latest, err := s.Review(t.Context(), item.ID, draft, 2)
-	if err != nil || latest.ReviewRevision != 3 || latest.Review.Approved || *latest.Analysis != validAnalysis() {
+	if err != nil || latest.ReviewRevision != 3 || latest.Review.Approved || !reflect.DeepEqual(*latest.Analysis, validAnalysis()) {
 		t.Fatalf("Review(after approval) = %+v, %v, want draft revision 3 and original analysis", latest, err)
 	}
 	if _, err = s.Review(t.Context(), item.ID, approval, 1); !errors.Is(err, ticket.ErrReviewConflict) {
@@ -61,6 +63,35 @@ func TestHistoryPreservesDraftsAndApprovals(t *testing.T) {
 	older, err := s.History(t.Context(), item.ID, 2, 2)
 	if err != nil || len(older) != 1 || older[0].Revision != 1 || older[0].Review.DraftReply != "Уточните дату списания." || older[0].CreatedAt.IsZero() {
 		t.Errorf("History(older page) = %+v, %v, want original saved draft", older, err)
+	}
+}
+
+func TestReviewPreservesKnowledgeSnapshot(t *testing.T) {
+	s := testStore(t, 10)
+	_, _, err := s.Create(t.Context(), ticket.Input{Title: "Выгрузка", Message: "Ошибка отчёта"}, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(t.Context(), 3, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := validAnalysis()
+	analysis.Sources = []ticket.Source{{ID: "technical-export", Title: "Прежняя статья", Content: "Прежний текст", Version: strings.Repeat("a", 64)}}
+	if err := s.Complete(t.Context(), claimed, analysis, ticket.Usage{}); err != nil {
+		t.Fatal(err)
+	}
+	analysis.Sources[0].Content = "Изменённый текст"
+	// A new repository instance must read the snapshot from JSONB, not memory.
+	reopened := New(s.pool, 10)
+	loaded, err := reopened.Get(t.Context(), claimed.ID)
+	if err != nil || len(loaded.Analysis.Sources) != 1 || loaded.Analysis.Sources[0].Content != "Прежний текст" {
+		t.Fatalf("loaded snapshot: %+v, %v", loaded, err)
+	}
+	review := ticket.Review{Category: "technical", DraftReply: "Ответ оператора", Approved: true}
+	saved, err := reopened.Review(t.Context(), claimed.ID, review, 0)
+	if err != nil || !reflect.DeepEqual(saved.Analysis, loaded.Analysis) {
+		t.Fatalf("review changed source: %+v, %v", saved, err)
 	}
 }
 

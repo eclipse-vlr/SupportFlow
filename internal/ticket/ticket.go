@@ -3,6 +3,7 @@ package ticket
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,11 +37,35 @@ func (i Input) Validate() error {
 }
 
 type Analysis struct {
-	Category       string `json:"category"`
-	Summary        string `json:"summary"`
-	Priority       string `json:"priority"`
-	PriorityReason string `json:"priority_reason"`
-	DraftReply     string `json:"draft_reply"`
+	Category       string   `json:"category"`
+	Summary        string   `json:"summary"`
+	Priority       string   `json:"priority"`
+	PriorityReason string   `json:"priority_reason"`
+	DraftReply     string   `json:"draft_reply"`
+	Sources        []Source `json:"sources,omitempty"`
+}
+
+// Source is the article snapshot included in the model request, not a model citation.
+type Source struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	Version string `json:"version"`
+}
+
+var sourceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,79}$`)
+var sourceVersionPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+func ValidSourceID(id string) bool { return sourceIDPattern.MatchString(id) }
+
+func (s Source) Validate() error {
+	if !ValidSourceID(s.ID) || !sourceVersionPattern.MatchString(s.Version) ||
+		strings.TrimSpace(s.Title) == "" || utf8.RuneCountInString(s.Title) > 200 ||
+		strings.TrimSpace(s.Content) == "" || len(s.Content) > 4096 ||
+		!utf8.ValidString(s.Title+s.Content) || strings.ContainsRune(s.Title+s.Content, '\x00') {
+		return errors.New("invalid source snapshot")
+	}
+	return nil
 }
 
 func ValidCategory(s string) bool {
@@ -55,6 +80,19 @@ func (a Analysis) Validate() error {
 		if strings.TrimSpace(value) == "" || len(value) > 12000 || !utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {
 			return errors.New("invalid analysis text")
 		}
+	}
+	if len(a.Sources) > 3 {
+		return errors.New("too many sources")
+	}
+	seen := make(map[string]bool, len(a.Sources))
+	for _, source := range a.Sources {
+		if err := source.Validate(); err != nil {
+			return err
+		}
+		if seen[source.ID] {
+			return errors.New("duplicate source")
+		}
+		seen[source.ID] = true
 	}
 	return nil
 }

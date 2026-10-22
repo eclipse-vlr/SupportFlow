@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,7 @@ func TestProviderFailures(t *testing.T) {
 		{"incomplete", 200, envelope("incomplete", analysisJSON), "provider_incomplete", false},
 		{"invalid category", 200, envelope("completed", strings.Replace(analysisJSON, "billing", "invented", 1)), "provider_invalid_analysis", false},
 		{"extra json", 200, envelope("completed", analysisJSON+` {}`), "provider_invalid_analysis", false},
+		{"invented sources", 200, envelope("completed", strings.TrimSuffix(analysisJSON, "}")+`,"sources":[]}`), "provider_invalid_analysis", false},
 		{"refusal", 200, `{"status":"completed","output":[{"type":"message","content":[{"type":"refusal"}]}]}`, "provider_refusal", false},
 		{"oversized", 200, strings.Repeat("x", 256*1024+1), "provider_response_too_large", false},
 	} {
@@ -92,6 +94,54 @@ func TestProviderFailures(t *testing.T) {
 			}
 			if tc.status == 429 && providerErr.RetryAfter != 7*time.Second {
 				t.Fatal("Retry-After ignored")
+			}
+		})
+	}
+}
+
+func TestKnowledgeSnapshotsMatchRequest(t *testing.T) {
+	for _, tc := range []struct{ message, sourceID string }{
+		{"Ошибка выгрузки отчёта CSV", "technical-export"},
+		{"Здравствуйте! Спасибо за помощь", ""},
+	} {
+		t.Run(tc.message, func(t *testing.T) {
+			var sent []ticket.Source
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload struct {
+					Input string `json:"input"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				var input struct {
+					Ticket   ticket.Input    `json:"ticket"`
+					Articles []ticket.Source `json:"knowledge_articles"`
+				}
+				if err := json.Unmarshal([]byte(payload.Input), &input); err != nil {
+					t.Error(err)
+				}
+				if input.Ticket.Message != tc.message {
+					t.Error("ticket was not forwarded")
+				}
+				sent = input.Articles
+				fmt.Fprint(w, envelope("completed", analysisJSON))
+			}))
+			defer server.Close()
+			client := New(server.URL, "test-secret", "test-model", 1000, time.Second)
+			defer client.Close()
+			analysis, _, err := client.Analyze(t.Context(), ticket.Input{Title: "Сообщение", Message: tc.message})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(analysis.Sources, sent) {
+				t.Fatal("saved snapshots differ from model context")
+			}
+			if tc.sourceID == "" {
+				if len(sent) != 0 {
+					t.Fatal("sent unrelated context")
+				}
+			} else if len(sent) != 1 || sent[0].ID != tc.sourceID || !strings.Contains(sent[0].Content, "период отчёта") {
+				t.Fatalf("unexpected context: %+v", sent)
 			}
 		})
 	}
