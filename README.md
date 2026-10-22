@@ -45,9 +45,11 @@ Copy-Item .env.example .env
 В `.env` нужно указать:
 
 ```dotenv
-LLM_PROVIDER=openai
-OPENAI_API_KEY=ваш_ключ
-OPENAI_MODEL=gpt-4.1-mini-2025-04-14
+LLM_PROVIDER=yandex
+YANDEX_API_KEY=секретный_API_ключ_Яндекса
+YANDEX_FOLDER_ID=идентификатор_каталога
+YANDEX_MODEL=aliceai-llm-flash
+YANDEX_BASE_URL=https://ai.api.cloud.yandex.net/v1
 ```
 
 Затем пересоздать приложение и добавить новое обращение:
@@ -56,7 +58,9 @@ OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 docker compose up -d --force-recreate app
 ```
 
-Используется Responses API со Structured Outputs. От модели приходит JSON с категорией, приоритетом, объяснением и ответом. Результат дополнительно проверяется в Go. Есть отдельная обработка отказов, обрезанных ответов и ошибок провайдера.
+Ключ можно создать в [Yandex AI Studio](https://aistudio.yandex.cloud/) по [официальной инструкции](https://aistudio.yandex.ru/ru/docs/ai-studio/operations/get-api-key). Нужен именно секретный API-ключ, а не его идентификатор. ID каталога берётся из Yandex Cloud. Доступ и оплата API настраиваются в Yandex Cloud.
+
+Используется [Responses API Yandex AI Studio](https://aistudio.yandex.ru/ru/docs/ai-studio/operations/generation/create-prompt) и модель Alice AI LLM Flash. Полный URI модели собирается из ID каталога: `gpt://<каталог>/aliceai-llm-flash`. От модели ожидается JSON с категорией, приоритетом, объяснением и ответом. Структура и значения дополнительно проверяются в Go. Есть отдельная обработка отказов, обрезанных ответов и ошибок провайдера.
 
 Ключ не попадает в браузер. `.env` исключён из Git и контекста Docker-сборки. В режиме LLM текст обращения передаётся провайдеру — для знакомства с проектом лучше использовать вымышленные сообщения.
 
@@ -91,7 +95,7 @@ docker compose --profile tools run --rm check
 
 Здесь форматирование, `go vet`, тесты с `-race`, интеграционные тесты с PostgreSQL и проверка зависимостей. Есть тесты на конкурентный захват задач, повторное создание обращения, просроченную аренду, отмену запроса к провайдеру и сохранение правок оператора.
 
-В `testdata/eval.json` лежат 32 учебных обращения с ожидаемой категорией. Для проверки настоящей модели нужно задать переменные `LLM_PROVIDER=openai` и `OPENAI_API_KEY` в окружении терминала:
+В `testdata/eval.json` лежат 32 учебных обращения с ожидаемой категорией. Для проверки настоящей модели нужно задать переменные `LLM_PROVIDER=yandex`, `YANDEX_API_KEY` и `YANDEX_FOLDER_ID` в окружении терминала:
 
 ```powershell
 go run ./cmd/eval -limit 5
