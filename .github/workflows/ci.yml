@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: supportflow-ci
+      LLM_PROVIDER: demo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check formatting, vet, race tests and demo evaluation
+        run: docker compose --env-file .env.example --profile tools run --rm check
+
+      - name: Build application image
+        run: docker compose --env-file .env.example build app
+
+      - name: Database logs on failure
+        if: failure()
+        run: docker compose --env-file .env.example logs --no-color db
+
+      - name: Clean up
+        if: always()
+        run: docker compose --env-file .env.example --profile tools down --volumes --remove-orphans

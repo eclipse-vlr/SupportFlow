@@ -35,7 +35,7 @@ YANDEX_FOLDER_ID=ID_каталога_Yandex_Cloud
 docker compose --profile tools run --rm check
 ```
 
-Форматирование, `go vet`, тесты с `-race` и PostgreSQL. Платный API не вызывается.
+Форматирование, `go vet`, тесты с `-race` и PostgreSQL. [CI](https://github.com/eclipse-vlr/SupportFlow/actions/workflows/ci.yml) запускает эти проверки и сборку Docker-образа при push и pull request. Платный API не вызывается.
 
 [Как устроено](docs/development.md) · [Статьи](internal/knowledge/articles) · [Алиса AI](docs/evaluation.md) · [Проверки](docs/mvp.md)
 
