@@ -109,6 +109,12 @@ label { display: block; font-size: 11px; font-weight: 500; color: #b8c1c9; margi
 details { margin-top: 15px; border-top: 1px solid #3a4249; padding-top: 12px; }
 summary { color: #b4c4bd; font-size: 11px; cursor: pointer; }
 #review-form { margin-top: 26px; }
+.knowledge-block { margin-top: 22px; }
+.source-list { padding-left: 18px; margin: 9px 0 0; font-size: 12px; line-height: 1.9; }
+.source-list a { color: #b1d5b8; text-underline-offset: 3px; }
+.source-list a:hover { color: #d2ebd8; }
+.source-content { margin-bottom: 20px; }
+.source-version { overflow-wrap: anywhere; }
 #review-category { max-width: 220px; }
 #review-reply { min-height: 162px; }
 .review-status { color: #a2acb5; font-size: 10px; }

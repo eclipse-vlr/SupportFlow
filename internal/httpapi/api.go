@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -49,6 +50,7 @@ func New(store Repository, log *slog.Logger, provider string) http.Handler {
 	mux.HandleFunc("GET /api/v1/tickets/{id}", a.get)
 	mux.HandleFunc("PATCH /api/v1/tickets/{id}/review", a.review)
 	mux.HandleFunc("GET /api/v1/tickets/{id}/history", a.history)
+	mux.HandleFunc("GET /api/v1/tickets/{id}/sources/{sourceID}", a.source)
 	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"provider": provider}) })
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +158,33 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"items": items, "limit": limit, "offset": offset})
+}
+
+func (a *API) source(w http.ResponseWriter, r *http.Request) {
+	id, sourceID := r.PathValue("id"), r.PathValue("sourceID")
+	if !idPattern.MatchString(id) {
+		problem(w, 400, "invalid_ticket_id")
+		return
+	}
+	if !ticket.ValidSourceID(sourceID) {
+		problem(w, 400, "invalid_source_id")
+		return
+	}
+	item, err := a.store.Get(r.Context(), id)
+	if err != nil {
+		a.failure(w, err)
+		return
+	}
+	if item.Analysis != nil {
+		for _, source := range item.Analysis.Sources {
+			if source.ID == sourceID {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				_, _ = fmt.Fprintf(w, "%s\n\n%s\n\nВерсия: %s\n", source.Title, source.Content, source.Version)
+				return
+			}
+		}
+	}
+	problem(w, 404, "source_not_found")
 }
 
 func (a *API) review(w http.ResponseWriter, r *http.Request) {

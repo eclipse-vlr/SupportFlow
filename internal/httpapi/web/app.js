@@ -189,6 +189,32 @@ function failureMessage(code) {
   return 'Анализ не завершён. Проверьте настройки провайдера и соединение.';
 }
 
+function renderSources(ticket) {
+  const sources = ticket.analysis.sources || [];
+  $('source-list').replaceChildren();
+  $('source-list').hidden = sources.length === 0;
+  $('sources-note').textContent = sources.length
+    ? 'Эти статьи вошли в запрос к модели. Сверьте с ними черновик.'
+    : 'У этого разбора нет сохранённых источников.';
+  for (const source of sources) {
+    const link = element('a', source.title);
+    link.href = '/api/v1/tickets/' + encodeURIComponent(ticket.id) + '/sources/' + encodeURIComponent(source.id);
+    link.addEventListener('click', (event) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      $('source-heading').textContent = source.title;
+      $('source-content').textContent = source.content;
+      $('source-version').textContent = 'Сохранённая версия · ' + source.version.slice(0, 12);
+      $('source-dialog').showModal();
+    });
+    const row = element('li');
+    row.append(link);
+    $('source-list').append(row);
+  }
+}
+
+$('close-source').addEventListener('click', () => $('source-dialog').close());
+
 function renderDetail(ticket) {
   state.approvedReply = ticket.review?.approved ? ticket.review.draft_reply : null;
   syncCopyButton();
@@ -215,6 +241,7 @@ function renderDetail(ticket) {
   $('priority-reason').textContent = ticket.analysis.priority_reason;
   $('original-reply').textContent = ticket.analysis.draft_reply;
   $('original-category').textContent = 'Категория модели: ' + categories[ticket.analysis.category];
+  renderSources(ticket);
   $('review-category').value = ticket.review?.category || ticket.analysis.category;
   $('review-reply').value = ticket.review?.draft_reply || ticket.analysis.draft_reply;
   $('review-status').textContent = (ticket.review?.approved ? 'Подтверждён ✓' : 'Черновик')

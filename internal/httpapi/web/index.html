@@ -52,6 +52,11 @@
                   <p id="summary"></p><p id="priority-reason" class="muted"></p>
                   <details><summary>Исходный ответ модели</summary><p id="original-category" class="muted"></p><p id="original-reply" class="preserve"></p></details>
                 </section>
+                <section class="knowledge-block" aria-label="Материалы для ответа">
+                  <h3>Материалы для ответа</h3>
+                  <p id="sources-note" class="muted"></p>
+                  <ul id="source-list" class="source-list"></ul>
+                </section>
                 <form id="review-form">
                   <div class="section-head"><h3>Ответ клиенту</h3><span id="review-status" class="review-status">Черновик</span></div>
                   <label for="review-category">Категория</label><select id="review-category"><option value="billing">Оплата</option><option value="access">Доступ</option><option value="technical">Техническое</option><option value="other">Другое</option></select>
@@ -75,6 +80,11 @@
       <footer><span>Изменения сохраняются после нажатия кнопки.</span><span>SupportFlow</span></footer>
     </main>
   </div>
+  <dialog id="source-dialog" aria-labelledby="source-heading">
+    <div class="dialog-heading"><div><p class="field-caption">СТАТЬЯ ИЗ ЗАПРОСА К МОДЕЛИ</p><h2 id="source-heading"></h2></div><button id="close-source" class="icon-button" type="button" aria-label="Закрыть статью">×</button></div>
+    <p id="source-content" class="preserve source-content"></p>
+    <p id="source-version" class="muted source-version"></p>
+  </dialog>
   <dialog id="create-dialog" aria-labelledby="create-heading">
     <div class="dialog-heading"><div><p class="field-caption">ВХОДЯЩЕЕ СООБЩЕНИЕ</p><h2 id="create-heading">Новое обращение</h2></div><button id="close-create" class="icon-button" type="button" aria-label="Закрыть форму">×</button></div>
     <form id="create-form">
