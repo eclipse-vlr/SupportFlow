@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SupportFlow — обращения под контролем</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="/">s<span>SupportFlow</span></a><span id="provider" class="badge">Подключение…</span></header>
+  <main>
+    <div class="intro"><span class="eyebrow">РАБОЧЕЕ МЕСТО ОПЕРАТОРА</span><h1>От обращения к решению.</h1><p>Анализ, приоритет и черновик ответа. Последнее слово — за вами.</p></div>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <div class="workspace">
+      <div class="left-column">
+        <section class="card">
+          <h2>Новое обращение</h2>
+          <form id="create-form">
+            <label for="title">Тема</label><input id="title" name="title" maxlength="200" required placeholder="Не появился доступ после оплаты">
+            <label for="message">Сообщение клиента</label><textarea id="message" name="message" rows="5" maxlength="16384" required placeholder="Оплатил подписку, деньги списались, но доступ не появился."></textarea>
+            <button id="create-button" type="submit" class="primary">Создать и проанализировать <span aria-hidden="true">↗</span></button>
+          </form>
+        </section>
+        <section class="card">
+          <div class="section-head"><h2>Обращения</h2><button id="refresh" class="text-button" type="button">Обновить</button></div>
+          <div class="filters"><select id="category-filter" aria-label="Фильтр по категории"><option value="">Все категории</option><option value="billing">Оплата</option><option value="access">Доступ</option><option value="technical">Техническое</option><option value="other">Другое</option></select><select id="status-filter" aria-label="Фильтр по статусу"><option value="">Все статусы</option><option value="pending">В очереди</option><option value="processing">Обработка</option><option value="completed">Готово</option><option value="failed">Ошибка</option></select></div>
+          <div id="ticket-list" aria-live="polite"></div>
+          <div class="pagination"><button id="previous" class="text-button" type="button" disabled>← Назад</button><span id="page-label">Страница 1</span><button id="next" class="text-button" type="button" disabled>Далее →</button></div>
+        </section>
+      </div>
+      <section class="card detail-card" aria-label="Карточка обращения">
+        <div id="empty-detail" class="empty"><span class="empty-symbol" aria-hidden="true">↗</span><h2>Начните с обращения</h2><p>Создайте новое или выберите его в списке.<br>Здесь появятся анализ и черновик ответа.</p></div>
+        <div id="detail" hidden>
+          <div class="section-head"><span id="ticket-status" class="badge"></span><span id="ticket-date" class="muted"></span></div>
+          <h2 id="ticket-title" class="detail-title"></h2><p id="ticket-message" class="original-message"></p>
+          <div id="waiting" class="callout"></div>
+          <div id="analysis" hidden>
+            <div class="section-head"><h3>Анализ обращения</h3><span id="priority" class="badge"></span></div>
+            <p id="summary"></p><p id="priority-reason" class="muted"></p>
+            <details><summary>Исходный черновик</summary><p id="original-reply" class="preserve"></p></details>
+            <hr>
+            <form id="review-form">
+              <div class="section-head"><h3>Ответ оператора</h3><span id="review-status" class="muted"></span></div>
+              <label for="review-category">Категория</label><select id="review-category"><option value="billing">Оплата</option><option value="access">Доступ</option><option value="technical">Техническое</option><option value="other">Другое</option></select>
+              <label for="review-reply">Черновик ответа</label><textarea id="review-reply" rows="8" required></textarea>
+              <p class="muted small">Проверьте факты перед подтверждением. Ответ сохраняется здесь; отправка клиенту не выполняется.</p>
+              <div class="actions"><button id="save-review" type="submit" class="secondary">Сохранить черновик</button><button id="approve-review" type="button" class="primary">Подтвердить ответ</button></div>
+            </form>
+            <p id="usage" class="muted small usage"></p>
+          </div>
+        </div>
+      </section>
+    </div>
+    <footer>SupportFlow / учебный проект на Go · Проверяйте рекомендации модели.</footer>
+  </main>
+</body>
+</html>
