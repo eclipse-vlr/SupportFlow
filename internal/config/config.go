@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 type Config struct {
 	HTTPAddr, DatabaseURL, Provider, APIKey, Model, BaseURL string
+	FolderID                                                string
 	Workers, MaxAttempts, MaxOutputTokens, MaxQueued        int
 	LLMTimeout                                              time.Duration
 }
@@ -20,10 +22,22 @@ func Load() (Config, error) {
 	c := Config{
 		HTTPAddr:    env("HTTP_ADDR", "127.0.0.1:8080"),
 		DatabaseURL: env("DATABASE_URL", "postgres://supportflow:supportflow_local@127.0.0.1:55433/supportflow?sslmode=disable"),
-		Provider:    env("LLM_PROVIDER", "demo"), APIKey: os.Getenv("OPENAI_API_KEY"),
-		Model:   env("OPENAI_MODEL", "gpt-4.1-mini-2025-04-14"),
-		BaseURL: strings.TrimRight(env("OPENAI_BASE_URL", "https://api.openai.com/v1"), "/"),
+		Provider:    env("LLM_PROVIDER", "demo"),
 	}
+	keyName, modelName, baseURLName := "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL"
+	defaultModel, defaultBaseURL := "gpt-4.1-mini-2025-04-14", "https://api.openai.com/v1"
+	switch c.Provider {
+	case "yandex":
+		keyName, modelName, baseURLName = "YANDEX_API_KEY", "YANDEX_MODEL", "YANDEX_BASE_URL"
+		defaultModel, defaultBaseURL = "aliceai-llm-flash", "https://ai.api.cloud.yandex.net/v1"
+		c.FolderID = strings.TrimSpace(os.Getenv("YANDEX_FOLDER_ID"))
+	case "demo", "openai":
+	default:
+		return Config{}, errors.New("LLM_PROVIDER must be demo, yandex or openai")
+	}
+	c.APIKey = strings.TrimSpace(os.Getenv(keyName))
+	c.Model = env(modelName, defaultModel)
+	c.BaseURL = strings.TrimRight(env(baseURLName, defaultBaseURL), "/")
 	for _, setting := range []struct {
 		name          string
 		target        *int
@@ -43,18 +57,27 @@ func Load() (Config, error) {
 	if err != nil || c.LLMTimeout < time.Second || c.LLMTimeout > 2*time.Minute {
 		return Config{}, errors.New("LLM_TIMEOUT must be between 1s and 2m")
 	}
-	if c.Provider != "demo" && c.Provider != "openai" {
-		return Config{}, errors.New("LLM_PROVIDER must be demo or openai")
+	if c.Provider != "demo" && c.APIKey == "" {
+		return Config{}, fmt.Errorf("%s is required for %s provider", keyName, c.Provider)
 	}
-	if c.Provider == "openai" && strings.TrimSpace(c.APIKey) == "" {
-		return Config{}, errors.New("OPENAI_API_KEY is required for openai provider")
+	if c.Provider == "yandex" {
+		if c.FolderID == "" {
+			return Config{}, errors.New("YANDEX_FOLDER_ID is required for yandex provider")
+		}
+		if len(c.FolderID) > 128 || !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(c.FolderID) {
+			return Config{}, errors.New("invalid YANDEX_FOLDER_ID")
+		}
+		if len(c.Model) > 128 || !regexp.MustCompile(`^[a-zA-Z0-9._-]+$`).MatchString(c.Model) {
+			return Config{}, errors.New("YANDEX_MODEL must be a model name, for example aliceai-llm-flash")
+		}
+		c.Model = "gpt://" + c.FolderID + "/" + c.Model
 	}
 	u, err := url.Parse(c.BaseURL)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return Config{}, errors.New("invalid OPENAI_BASE_URL")
+		return Config{}, fmt.Errorf("invalid %s", baseURLName)
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")) {
-		return Config{}, errors.New("OPENAI_BASE_URL requires HTTPS (HTTP is allowed only on loopback)")
+		return Config{}, fmt.Errorf("%s requires HTTPS (HTTP is allowed only on loopback)", baseURLName)
 	}
 	return c, nil
 }

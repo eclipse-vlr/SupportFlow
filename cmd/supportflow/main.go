@@ -57,8 +57,13 @@ func run(log *slog.Logger) error {
 		return errors.New("database startup failed; check connection and schema permissions")
 	}
 	var analyzer llm.Analyzer = llm.Demo{}
-	if cfg.Provider == "openai" {
-		client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
+	if cfg.Provider != "demo" {
+		var client *llm.Client
+		if cfg.Provider == "yandex" {
+			client = llm.NewYandex(cfg.BaseURL, cfg.APIKey, cfg.FolderID, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
+		} else {
+			client = llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
+		}
 		defer client.Close()
 		analyzer = client
 	}

@@ -151,6 +151,9 @@ async function refresh() {
 }
 
 function failureMessage(code) {
+  if (code === 'provider_http_402') {
+    return 'Недостаточно средств на API-балансе провайдера. Пополните баланс и создайте новое обращение.';
+  }
   if (code === 'provider_http_401' || code === 'provider_http_403') {
     return 'Провайдер отклонил запрос. Проверьте API-ключ и доступ к модели.';
   }
@@ -309,7 +312,8 @@ window.addEventListener('beforeunload', (event) => {
   }
 });
 request('/api/v1/config').then((data) => {
-  $('provider').textContent = data.provider === 'demo' ? 'Деморежим' : 'Режим LLM';
+  const providers = {demo: 'Деморежим', yandex: 'Алиса AI', openai: 'OpenAI'};
+  $('provider').textContent = providers[data.provider] || 'Режим LLM';
   $('provider').classList.toggle('demo', data.provider === 'demo');
 }).catch(() => notice('Не удалось подключиться к серверу.', 'error'));
 

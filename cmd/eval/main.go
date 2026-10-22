@@ -32,7 +32,7 @@ func run() error {
 		return err
 	}
 	if cfg.Provider == "demo" && !*allowDemo {
-		return fmt.Errorf("set LLM_PROVIDER=openai and OPENAI_API_KEY, or use -allow-demo for rules-only checks")
+		return fmt.Errorf("set LLM_PROVIDER=yandex, YANDEX_API_KEY and YANDEX_FOLDER_ID, or use -allow-demo for rules-only checks")
 	}
 	data, err := os.ReadFile(*path)
 	if err != nil {
@@ -46,8 +46,13 @@ func run() error {
 		return err
 	}
 	var analyzer llm.Analyzer = llm.Demo{}
-	if cfg.Provider == "openai" {
-		client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
+	if cfg.Provider != "demo" {
+		var client *llm.Client
+		if cfg.Provider == "yandex" {
+			client = llm.NewYandex(cfg.BaseURL, cfg.APIKey, cfg.FolderID, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
+		} else {
+			client = llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
+		}
 		defer client.Close()
 		analyzer = client
 	}

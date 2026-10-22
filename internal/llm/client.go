@@ -1,4 +1,4 @@
-// Package llm adapts the Responses API and an explicit offline demonstration provider.
+// Package llm adapts Yandex and OpenAI Responses APIs and an offline demo provider.
 package llm
 
 import (
@@ -33,6 +33,7 @@ type Client struct {
 	http                *http.Client
 	baseURL, key, model string
 	maxTokens           int
+	folderID            string
 }
 
 func New(baseURL, key, model string, maxTokens int, timeout time.Duration) *Client {
@@ -41,6 +42,13 @@ func New(baseURL, key, model string, maxTokens int, timeout time.Duration) *Clie
 	return &Client{http: &http.Client{Transport: transport, Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		baseURL: strings.TrimRight(baseURL, "/"), key: key, model: model, maxTokens: maxTokens}
+}
+
+// NewYandex uses an AI Studio API key and scopes requests to the given folder.
+func NewYandex(baseURL, key, folderID, model string, maxTokens int, timeout time.Duration) *Client {
+	client := New(baseURL, key, model, maxTokens, timeout)
+	client.folderID = folderID
+	return client
 }
 
 func (c *Client) Close() { c.http.CloseIdleConnections() }
@@ -64,14 +72,15 @@ func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analys
 	properties["category"] = map[string]any{"type": "string", "enum": []string{"billing", "access", "technical", "other"}}
 	properties["priority"] = map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}}
 	userData, _ := json.Marshal(input)
+	format := map[string]any{
+		"type": "json_schema", "name": "ticket_analysis", "strict": true,
+		"schema": map[string]any{"type": "object", "properties": properties, "additionalProperties": false,
+			"required": []string{"category", "summary", "priority", "priority_reason", "draft_reply"}},
+	}
 	payload := map[string]any{
 		"model": c.model, "instructions": instructions, "input": string(userData),
 		"store": false, "max_output_tokens": c.maxTokens,
-		"text": map[string]any{"format": map[string]any{
-			"type": "json_schema", "name": "ticket_analysis", "strict": true,
-			"schema": map[string]any{"type": "object", "properties": properties, "additionalProperties": false,
-				"required": []string{"category", "summary", "priority", "priority_reason", "draft_reply"}},
-		}},
+		"text": map[string]any{"format": format},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -82,6 +91,10 @@ func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analys
 		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "provider_configuration"}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.key)
+	if c.folderID != "" {
+		req.Header.Set("Authorization", "Api-Key "+c.key)
+		req.Header.Set("x-folder-id", c.folderID)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {

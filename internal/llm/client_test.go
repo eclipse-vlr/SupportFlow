@@ -64,6 +64,7 @@ func TestProviderFailures(t *testing.T) {
 	}{
 		{"rate limit", 429, `{"error":"test-secret private customer text"}`, "provider_http_429", true},
 		{"auth", 401, `{"error":"test-secret"}`, "provider_http_401", false},
+		{"insufficient balance", 402, `{"error":{"message":"test-secret private customer text"}}`, "provider_http_402", false},
 		{"server", 503, `{}`, "provider_http_503", true},
 		{"invalid json", 200, `{`, "provider_invalid_json", false},
 		{"incomplete", 200, envelope("incomplete", analysisJSON), "provider_incomplete", false},
@@ -93,6 +94,55 @@ func TestProviderFailures(t *testing.T) {
 				t.Fatal("Retry-After ignored")
 			}
 		})
+	}
+}
+
+func TestYandexResponsesContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" || r.Method != "POST" || r.Header.Get("Authorization") != "Api-Key yandex-test-secret" || r.Header.Get("x-folder-id") != "test-folder" {
+			t.Error("invalid Yandex request")
+		}
+		var payload struct {
+			Model     string `json:"model"`
+			Input     string `json:"input"`
+			Store     *bool  `json:"store"`
+			MaxTokens int    `json:"max_output_tokens"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+			Text struct {
+				Format struct {
+					Type   string `json:"type"`
+					Strict *bool  `json:"strict"`
+					Schema struct {
+						Required             []string `json:"required"`
+						AdditionalProperties bool     `json:"additionalProperties"`
+					} `json:"schema"`
+				} `json:"format"`
+			} `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		if payload.Model != "gpt://test-folder/aliceai-llm-flash" || payload.Reasoning.Effort != "" || payload.Store == nil || *payload.Store || payload.MaxTokens != 1500 || payload.Text.Format.Strict == nil || !*payload.Text.Format.Strict || payload.Text.Format.Type != "json_schema" || len(payload.Text.Format.Schema.Required) != 5 || payload.Text.Format.Schema.AdditionalProperties || !strings.Contains(payload.Input, "Оплата") {
+			t.Error("Yandex request does not follow the documented Responses contract")
+		}
+		response := map[string]any{
+			"status": "completed", "model": "gpt://test-folder/aliceai-llm-flash",
+			"usage": map[string]int{"input_tokens": 42, "output_tokens": 80},
+			"output": []any{
+				map[string]any{"type": "reasoning", "content": []any{map[string]string{"type": "reasoning_text", "text": "not part of the operator answer"}}},
+				map[string]any{"type": "message", "content": []any{map[string]string{"type": "output_text", "text": analysisJSON}}},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+	client := NewYandex(server.URL+"/v1", "yandex-test-secret", "test-folder", "gpt://test-folder/aliceai-llm-flash", 1500, time.Second)
+	defer client.Close()
+	analysis, usage, err := client.Analyze(t.Context(), ticket.Input{Title: "Оплата", Message: "Оплата без доступа"})
+	if err != nil || analysis.Category != "billing" || usage.Model != "gpt://test-folder/aliceai-llm-flash" || usage.InputTokens != 42 || usage.OutputTokens != 80 {
+		t.Fatalf("Yandex response: analysis=%+v usage=%+v error=%v", analysis, usage, err)
 	}
 }
 
