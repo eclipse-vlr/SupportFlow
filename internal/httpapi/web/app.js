@@ -22,6 +22,8 @@ const state = {
   listSignature: '',
   dirty: false,
   saving: false,
+  copying: false,
+  approvedReply: null,
   reviewRevision: 0,
   historyKey: '',
   historyGeneration: 0,
@@ -71,6 +73,12 @@ function date(value) {
   });
 }
 
+function syncCopyButton() {
+  const ready = Boolean(state.approvedReply) && !state.dirty && !state.saving && !state.copying;
+  $('copy-review').disabled = !ready;
+  $('copy-review').title = ready ? 'Скопировать подтверждённый ответ' : 'Сначала сохраните и подтвердите ответ';
+}
+
 function statusBadge(ticket) {
   const badge = element('span', statuses[ticket.status], 'badge');
   badge.dataset.status = ticket.status;
@@ -90,6 +98,8 @@ function selectTicket(id) {
   state.selected = id;
   state.detailSignature = '';
   state.dirty = false;
+  state.approvedReply = null;
+  syncCopyButton();
   refresh();
 }
 
@@ -180,6 +190,8 @@ function failureMessage(code) {
 }
 
 function renderDetail(ticket) {
+  state.approvedReply = ticket.review?.approved ? ticket.review.draft_reply : null;
+  syncCopyButton();
   $('empty-detail').hidden = true;
   $('detail').hidden = false;
   $('ticket-reference').textContent = '#' + ticket.id.slice(0, 8);
@@ -340,6 +352,7 @@ async function saveReview(approved) {
   if (state.saving || !$('review-form').reportValidity()) return;
   const id = state.selected;
   state.saving = true;
+  syncCopyButton();
   $('save-review').disabled = true;
   $('approve-review').disabled = true;
   $('review-category').disabled = true;
@@ -368,6 +381,7 @@ async function saveReview(approved) {
     notice('Не удалось сохранить ответ. ' + error.message, 'error');
   } finally {
     state.saving = false;
+    syncCopyButton();
     $('save-review').disabled = false;
     $('approve-review').disabled = false;
     $('review-category').disabled = false;
@@ -380,9 +394,25 @@ $('review-form').addEventListener('submit', (event) => {
   saveReview(false);
 });
 $('approve-review').addEventListener('click', () => saveReview(true));
+$('copy-review').addEventListener('click', async () => {
+  if (!state.approvedReply || state.dirty || state.saving || state.copying) return;
+  const reply = state.approvedReply;
+  state.copying = true;
+  syncCopyButton();
+  try {
+    await navigator.clipboard.writeText(reply);
+    notice('Подтверждённый ответ скопирован. Его можно вставить в письмо или чат.');
+  } catch {
+    notice('Не удалось скопировать ответ. Выделите текст и скопируйте его вручную.', 'error');
+  } finally {
+    state.copying = false;
+    syncCopyButton();
+  }
+});
 for (const id of ['review-category', 'review-reply']) {
   $(id).addEventListener('input', () => {
     state.dirty = true;
+    syncCopyButton();
     $('review-status').textContent = 'Не сохранён';
     $('review-status').dataset.state = 'dirty';
   });
