@@ -1,0 +1,6 @@
+[
+  {"title":"Двойное списание","message":"С карты дважды списали деньги за один месяц.","expected_category":"billing"},
+  {"title":"Приглашение","message":"Ссылка приглашения не даёт доступ в команду.","expected_category":"access"},
+  {"title":"Предложение","message":"Добавьте, пожалуйста, тёмную тему.","expected_category":"other"},
+  {"title":"Языки","message":"Планируете добавить испанский язык интерфейса?","expected_category":"other"}
+]
