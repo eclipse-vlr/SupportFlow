@@ -12,7 +12,10 @@ import (
 	"supportflow/internal/ticket"
 )
 
-type fakeRepository struct{ created, reviewed int }
+type fakeRepository struct {
+	created, reviewed, closed, feedback int
+	filter                              ticket.ListFilter
+}
 
 func (f *fakeRepository) Create(_ context.Context, i ticket.Input, _ string) (ticket.Ticket, bool, error) {
 	f.created++
@@ -21,8 +24,17 @@ func (f *fakeRepository) Create(_ context.Context, i ticket.Input, _ string) (ti
 func (f *fakeRepository) Get(context.Context, string) (ticket.Ticket, error) {
 	return ticket.Ticket{}, ticket.ErrNotFound
 }
-func (f *fakeRepository) List(context.Context, string, string, int, int) ([]ticket.Ticket, error) {
+func (f *fakeRepository) List(_ context.Context, filter ticket.ListFilter, _ int, _ int) ([]ticket.Ticket, error) {
+	f.filter = filter
 	return []ticket.Ticket{}, nil
+}
+func (f *fakeRepository) SetClosed(context.Context, string, bool, int64) (ticket.Ticket, error) {
+	f.closed++
+	return ticket.Ticket{}, ticket.ErrVersionConflict
+}
+func (f *fakeRepository) SetFeedback(context.Context, string, ticket.Feedback, int64) (ticket.Ticket, error) {
+	f.feedback++
+	return ticket.Ticket{}, ticket.ErrVersionConflict
 }
 func (f *fakeRepository) Review(context.Context, string, ticket.Review, int64) (ticket.Ticket, error) {
 	f.reviewed++

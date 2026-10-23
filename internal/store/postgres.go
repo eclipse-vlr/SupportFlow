@@ -19,6 +19,9 @@ var schema string
 //go:embed migrations/002_review_history.sql
 var reviewHistorySchema string
 
+//go:embed migrations/003_operator_workflow.sql
+var operatorWorkflowSchema string
+
 type Store struct {
 	pool      *pgxpool.Pool
 	maxQueued int
@@ -45,7 +48,7 @@ version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); e
 	if err = tx.QueryRow(ctx, "SELECT COALESCE(max(version),0) FROM schema_migrations").Scan(&current); err != nil {
 		return err
 	}
-	migrations := []string{schema, reviewHistorySchema}
+	migrations := []string{schema, reviewHistorySchema, operatorWorkflowSchema}
 	if current > len(migrations) {
 		return errors.New("database schema is newer than this application")
 	}
@@ -65,13 +68,13 @@ version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); e
 }
 
 const columns = `id::text, title, message, status, attempts, analysis, review,
-model, input_tokens, output_tokens, last_error, created_at, updated_at, review_revision`
+model, input_tokens, output_tokens, last_error, created_at, updated_at, review_revision,version,closed_at,feedback`
 
 func scan(row pgx.Row) (ticket.Ticket, error) {
 	var t ticket.Ticket
-	var analysis, review []byte
+	var analysis, review, feedback []byte
 	err := row.Scan(&t.ID, &t.Title, &t.Message, &t.Status, &t.Attempts, &analysis, &review,
-		&t.Usage.Model, &t.Usage.InputTokens, &t.Usage.OutputTokens, &t.LastError, &t.CreatedAt, &t.UpdatedAt, &t.ReviewRevision)
+		&t.Usage.Model, &t.Usage.InputTokens, &t.Usage.OutputTokens, &t.LastError, &t.CreatedAt, &t.UpdatedAt, &t.ReviewRevision, &t.Version, &t.ClosedAt, &feedback)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ticket.ErrNotFound
 	}
@@ -85,6 +88,11 @@ func scan(row pgx.Row) (ticket.Ticket, error) {
 	}
 	if review != nil {
 		if err = json.Unmarshal(review, &t.Review); err != nil {
+			return t, err
+		}
+	}
+	if feedback != nil {
+		if err = json.Unmarshal(feedback, &t.Feedback); err != nil {
 			return t, err
 		}
 	}
@@ -130,10 +138,14 @@ func (s *Store) Get(ctx context.Context, id string) (ticket.Ticket, error) {
 	return scan(s.pool.QueryRow(ctx, "SELECT "+columns+" FROM tickets WHERE id=$1", id))
 }
 
-func (s *Store) List(ctx context.Context, category, status string, limit, offset int) ([]ticket.Ticket, error) {
+func (s *Store) List(ctx context.Context, filter ticket.ListFilter, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+columns+` FROM tickets
 WHERE ($1='' OR COALESCE(review->>'category',analysis->>'category')=$1)
-AND ($2='' OR status=$2) ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4`, category, status, limit, offset)
+AND ($2='' OR status=$2)
+AND ($3='' OR strpos(lower(title || E'\n' || message),lower($3))>0)
+AND ($4='' OR ($4='open' AND closed_at IS NULL) OR ($4='closed' AND closed_at IS NOT NULL)
+OR ($4='needs_review' AND closed_at IS NULL AND status='completed' AND NOT COALESCE(review @> '{"approved":true}',false)))
+ORDER BY created_at DESC,id DESC LIMIT $5 OFFSET $6`, filter.Category, filter.Status, filter.Search, filter.View, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +176,9 @@ func (s *Store) Review(ctx context.Context, id string, review ticket.Review, exp
 	if current.Status != "completed" {
 		return ticket.Ticket{}, ticket.ErrConflict
 	}
+	if current.ClosedAt != nil {
+		return ticket.Ticket{}, ticket.ErrClosed
+	}
 	unchanged := current.Review != nil && *current.Review == review
 	if expectedRevision != current.ReviewRevision {
 		if unchanged && expectedRevision == current.ReviewRevision-1 {
@@ -178,7 +193,7 @@ func (s *Store) Review(ctx context.Context, id string, review ticket.Review, exp
 	if err != nil {
 		return ticket.Ticket{}, err
 	}
-	t, err := scan(tx.QueryRow(ctx, "UPDATE tickets SET review=$2,review_revision=review_revision+1,updated_at=now() WHERE id=$1 RETURNING "+columns, id, data))
+	t, err := scan(tx.QueryRow(ctx, "UPDATE tickets SET review=$2,review_revision=review_revision+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING "+columns, id, data))
 	if err != nil {
 		return t, err
 	}
@@ -227,7 +242,7 @@ WHERE ticket_id=$1 AND ($2::bigint=0 OR revision<$2) ORDER BY revision DESC LIMI
 // completion by an older lease holder cannot overwrite a newer attempt.
 func (s *Store) Claim(ctx context.Context, maxAttempts int, lease time.Duration) (ticket.Ticket, error) {
 	_, err := s.pool.Exec(ctx, `UPDATE tickets SET status='failed',lease_until=NULL,
-last_error='attempts_exhausted',updated_at=now()
+last_error='attempts_exhausted',version=version+1,updated_at=now()
 WHERE status='processing' AND lease_until<=now() AND attempts >= $1`, maxAttempts)
 	if err != nil {
 		return ticket.Ticket{}, err
@@ -237,13 +252,13 @@ SELECT id FROM tickets WHERE attempts<$1 AND
 ((status='pending' AND available_at<=now()) OR (status='processing' AND lease_until<=now()))
 ORDER BY available_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1)
 UPDATE tickets t SET status='processing', attempts=t.attempts+1,
-lease_until=now()+($2 * interval '1 millisecond'),updated_at=now()
+lease_until=now()+($2 * interval '1 millisecond'),version=t.version+1,updated_at=now()
 FROM next WHERE t.id=next.id RETURNING `+qualifiedColumns(), maxAttempts, lease.Milliseconds()))
 }
 
 func qualifiedColumns() string {
 	return `t.id::text,t.title,t.message,t.status,t.attempts,t.analysis,t.review,
-t.model,t.input_tokens,t.output_tokens,t.last_error,t.created_at,t.updated_at,t.review_revision`
+t.model,t.input_tokens,t.output_tokens,t.last_error,t.created_at,t.updated_at,t.review_revision,t.version,t.closed_at,t.feedback`
 }
 
 func (s *Store) Complete(ctx context.Context, t ticket.Ticket, a ticket.Analysis, u ticket.Usage) error {
@@ -253,7 +268,7 @@ func (s *Store) Complete(ctx context.Context, t ticket.Ticket, a ticket.Analysis
 	}
 	result, err := s.pool.Exec(ctx, `UPDATE tickets SET status='completed',analysis=$3,
 model=$4,input_tokens=input_tokens+$5,output_tokens=output_tokens+$6,
-last_error='',lease_until=NULL,updated_at=now()
+last_error='',lease_until=NULL,version=version+1,updated_at=now()
 WHERE id=$1 AND attempts=$2 AND status='processing' AND lease_until>now()`, t.ID, t.Attempts, data, u.Model, u.InputTokens, u.OutputTokens)
 	if err != nil {
 		return err
@@ -270,7 +285,7 @@ func (s *Store) Fail(ctx context.Context, t ticket.Ticket, code string, retry bo
 		status = "pending"
 	}
 	result, err := s.pool.Exec(ctx, `UPDATE tickets SET status=$3,last_error=$4,lease_until=NULL,
-available_at=now()+($5 * interval '1 millisecond'),updated_at=now(),
+available_at=now()+($5 * interval '1 millisecond'),version=version+1,updated_at=now(),
 model=$6,input_tokens=input_tokens+$7,output_tokens=output_tokens+$8
 WHERE id=$1 AND attempts=$2 AND status='processing' AND lease_until>now()`, t.ID, t.Attempts, status, code, delay.Milliseconds(), u.Model, u.InputTokens, u.OutputTokens)
 	if err != nil {

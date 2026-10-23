@@ -100,7 +100,7 @@ func TestDurableWorkflowAndReview(t *testing.T) {
 	if err != nil || done.Review == nil || *done.Review != review || done.Analysis.Category != "billing" || done.Usage != u {
 		t.Fatalf("review: %+v %v", done, err)
 	}
-	items, err := s.List(ctx, "access", "completed", 10, 0)
+	items, err := s.List(ctx, ticket.ListFilter{Category: "access", Status: "completed"}, 10, 0)
 	if err != nil || len(items) != 1 || items[0].ID != created.ID {
 		t.Fatalf("corrected category filter: %+v %v", items, err)
 	}

@@ -10,10 +10,13 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("ticket not found")
-	ErrConflict       = errors.New("ticket state or idempotency conflict")
-	ErrQueueFull      = errors.New("queue is full")
-	ErrReviewConflict = errors.New("review revision changed")
+	ErrNotFound         = errors.New("ticket not found")
+	ErrConflict         = errors.New("ticket state or idempotency conflict")
+	ErrQueueFull        = errors.New("queue is full")
+	ErrReviewConflict   = errors.New("review revision changed")
+	ErrVersionConflict  = errors.New("ticket version changed")
+	ErrClosed           = errors.New("ticket is closed")
+	ErrApprovalRequired = errors.New("approved reply required")
 )
 
 const MaxMessageBytes = 16 * 1024
@@ -103,6 +106,28 @@ type Usage struct {
 	OutputTokens int64  `json:"output_tokens"`
 }
 
+type ListFilter struct {
+	Category string
+	Status   string
+	Search   string
+	View     string
+}
+
+// Feedback evaluates the original model draft, independently of the saved reply.
+type Feedback struct {
+	Rating string `json:"rating"`
+	Reason string `json:"reason"`
+}
+
+func (f Feedback) Validate() error {
+	if (f.Rating != "useful" && f.Rating != "rewritten") || utf8.RuneCountInString(f.Reason) > 1000 ||
+		!utf8.ValidString(f.Reason) || strings.ContainsRune(f.Reason, '\x00') ||
+		(f.Rating == "rewritten" && strings.TrimSpace(f.Reason) == "") {
+		return errors.New("invalid feedback rating or reason")
+	}
+	return nil
+}
+
 type Review struct {
 	Category   string `json:"category"`
 	DraftReply string `json:"draft_reply"`
@@ -127,13 +152,16 @@ func (r Review) Validate() error {
 type Ticket struct {
 	ID string `json:"id"`
 	Input
-	Status         string    `json:"status"`
-	Attempts       int       `json:"attempts"`
-	Analysis       *Analysis `json:"analysis"`
-	Review         *Review   `json:"review"`
-	ReviewRevision int64     `json:"review_revision"`
-	Usage          Usage     `json:"usage"`
-	LastError      string    `json:"last_error,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Status         string     `json:"status"`
+	Attempts       int        `json:"attempts"`
+	Analysis       *Analysis  `json:"analysis"`
+	Review         *Review    `json:"review"`
+	ReviewRevision int64      `json:"review_revision"`
+	Version        int64      `json:"version"`
+	ClosedAt       *time.Time `json:"closed_at"`
+	Feedback       *Feedback  `json:"feedback"`
+	Usage          Usage      `json:"usage"`
+	LastError      string     `json:"last_error,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }

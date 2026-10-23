@@ -27,8 +27,10 @@ var web embed.FS
 type Repository interface {
 	Create(context.Context, ticket.Input, string) (ticket.Ticket, bool, error)
 	Get(context.Context, string) (ticket.Ticket, error)
-	List(context.Context, string, string, int, int) ([]ticket.Ticket, error)
+	List(context.Context, ticket.ListFilter, int, int) ([]ticket.Ticket, error)
 	Review(context.Context, string, ticket.Review, int64) (ticket.Ticket, error)
+	SetClosed(context.Context, string, bool, int64) (ticket.Ticket, error)
+	SetFeedback(context.Context, string, ticket.Feedback, int64) (ticket.Ticket, error)
 	History(context.Context, string, int64, int) ([]ticket.ReviewEvent, error)
 	Ping(context.Context) error
 }
@@ -49,6 +51,8 @@ func New(store Repository, log *slog.Logger, provider string) http.Handler {
 	mux.HandleFunc("GET /api/v1/tickets", a.list)
 	mux.HandleFunc("GET /api/v1/tickets/{id}", a.get)
 	mux.HandleFunc("PATCH /api/v1/tickets/{id}/review", a.review)
+	mux.HandleFunc("PATCH /api/v1/tickets/{id}/closure", a.closure)
+	mux.HandleFunc("PUT /api/v1/tickets/{id}/feedback", a.feedback)
 	mux.HandleFunc("GET /api/v1/tickets/{id}/history", a.history)
 	mux.HandleFunc("GET /api/v1/tickets/{id}/sources/{sourceID}", a.source)
 	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"provider": provider}) })
@@ -128,6 +132,15 @@ func (a *API) get(w http.ResponseWriter, r *http.Request) {
 func (a *API) list(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	category, status := query.Get("category"), query.Get("status")
+	search, view := strings.TrimSpace(query.Get("q")), query.Get("view")
+	if !utf8.ValidString(search) || strings.ContainsRune(search, '\x00') || utf8.RuneCountInString(search) > 200 {
+		problem(w, 400, "invalid_search")
+		return
+	}
+	if view != "" && view != "open" && view != "closed" && view != "needs_review" {
+		problem(w, 400, "invalid_view")
+		return
+	}
 	if category != "" && !ticket.ValidCategory(category) {
 		problem(w, 400, "invalid_category")
 		return
@@ -152,7 +165,7 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	items, err := a.store.List(r.Context(), category, status, limit, offset)
+	items, err := a.store.List(r.Context(), ticket.ListFilter{Category: category, Status: status, Search: search, View: view}, limit, offset)
 	if err != nil {
 		a.failure(w, err)
 		return
@@ -319,6 +332,12 @@ func (a *API) failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "ticket_conflict")
 	case errors.Is(err, ticket.ErrReviewConflict):
 		problem(w, 409, "review_conflict")
+	case errors.Is(err, ticket.ErrVersionConflict):
+		problem(w, 409, "ticket_version_conflict")
+	case errors.Is(err, ticket.ErrClosed):
+		problem(w, 409, "ticket_closed")
+	case errors.Is(err, ticket.ErrApprovalRequired):
+		problem(w, 409, "approval_required")
 	case errors.Is(err, ticket.ErrQueueFull):
 		w.Header().Set("Retry-After", "10")
 		problem(w, 429, "queue_full")
