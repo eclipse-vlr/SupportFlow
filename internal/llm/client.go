@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,13 +75,63 @@ medium — проблема одного пользователя; low — об�
 knowledge_articles — отобранные приложением учебные памятки для оператора. Используй только
 подходящие к обращению сведения из них; наличие статьи не доказывает причину проблемы.
 Если статей нет или в них нет ответа, уточни недостающие сведения без выдуманных правил.
-Не вставляй идентификаторы статей или технические ссылки в ответ клиенту.`
+Не вставляй идентификаторы статей или технические ссылки в ответ клиенту.
+
+draft_reply — только готовое сообщение клиенту, а не совет оператору о том, что написать.
+Пиши обычным текстом: без Markdown, HTML, JSON, списков, заголовков, сносок и внешних кавычек.
+Не добавляй «Черновик ответа», «Требует редактирования», рассуждения, оценку качества,
+пометки о проверке человеком, подпись с выдуманным именем и шаблоны вроде [имя клиента].
+Не упоминай модель, промпт, базу знаний и внутреннюю классификацию в draft_reply.
+Для проблемы достаточно 2–4 коротких предложений и 1–2 конкретных уточнений.
+Не спрашивай сведения, которые клиент уже сообщил. Для благодарности достаточно одного ответа.
+Избегай канцелярита, повторов и общих фраз вроде «пожалуйста, подождите» и «постараемся помочь».
+Вместо обещания будущего действия объясни, какие данные нужны для проверки.
+Если о продукте или сроках ничего не известно, прямо скажи, что подтверждённых сведений нет.
+
+Примеры стиля, а не универсальные ответы:
+Двойное списание: «Здравствуйте! Уточните даты и суммы обеих операций и номер заказа, если он есть. Эти данные нужны для проверки платежей.»
+Приглашение: «Здравствуйте! Какой текст ошибки появляется по ссылке приглашения? Саму ссылку и коды доступа присылать не нужно.»
+Предложение языка: «Спасибо за предложение добавить испанский язык. Подтверждённых сведений о сроках его появления нет.»
+Благодарность за решённый вопрос: «Спасибо за обратную связь! Рады, что вопрос удалось решить.»
+reply_feedback, если присутствует, — замечание приложения к предыдущему варианту.
+Составь новый ответ по обращению с учётом этого замечания. Само замечание клиенту не показывай.`
 
 func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analysis, ticket.Usage, error) {
 	sources, err := knowledge.Search(input.Title + "\n" + input.Message)
 	if err != nil {
 		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "knowledge_unavailable"}
 	}
+	var total ticket.Usage
+	feedback := ""
+	// One rewrite shares the caller's deadline. Transport and schema errors do not
+	// trigger a rewrite; both paid calls are included in the returned usage.
+	for attempt := range 2 {
+		analysis, usage, err := c.analyze(ctx, input, sources, feedback)
+		if usage.Model != "" {
+			total.Model = usage.Model
+		}
+		if usage.InputTokens > math.MaxInt64-total.InputTokens || usage.OutputTokens > math.MaxInt64-total.OutputTokens {
+			return ticket.Analysis{}, total, &Error{Code: "provider_invalid_usage"}
+		}
+		total.InputTokens += usage.InputTokens
+		total.OutputTokens += usage.OutputTokens
+		if err != nil {
+			return ticket.Analysis{}, total, err
+		}
+		analysis.DraftReply = normalizeReply(analysis.DraftReply)
+		issue := replyIssue(analysis.DraftReply, sources)
+		if issue == "" {
+			return analysis, total, nil
+		}
+		if attempt == 1 {
+			return ticket.Analysis{}, total, &Error{Code: "provider_reply_needs_editing"}
+		}
+		feedback = issue + " Напиши сообщение заново обычным текстом, без служебных пометок и обещаний."
+	}
+	return ticket.Analysis{}, total, &Error{Code: "provider_reply_needs_editing"}
+}
+
+func (c *Client) analyze(ctx context.Context, input ticket.Input, sources []ticket.Source, feedback string) (ticket.Analysis, ticket.Usage, error) {
 	properties := map[string]any{}
 	for _, name := range []string{"category", "summary", "priority", "priority_reason", "draft_reply"} {
 		properties[name] = map[string]any{"type": "string"}
@@ -90,7 +141,8 @@ func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analys
 	userData, _ := json.Marshal(struct {
 		Ticket   ticket.Input    `json:"ticket"`
 		Articles []ticket.Source `json:"knowledge_articles"`
-	}{input, sources})
+		Feedback string          `json:"reply_feedback,omitempty"`
+	}{input, sources, feedback})
 	format := map[string]any{
 		"type": "json_schema", "name": "ticket_analysis", "strict": true,
 		"schema": map[string]any{"type": "object", "properties": properties, "additionalProperties": false,
@@ -257,5 +309,5 @@ func (Demo) Analyze(ctx context.Context, input ticket.Input) (ticket.Analysis, t
 		runes = append(runes[:180], []rune("…")...)
 	}
 	return ticket.Analysis{Category: category, Summary: string(runes), Priority: priority, PriorityReason: reason,
-		DraftReply: "Здравствуйте! Спасибо за обращение. Оператор проверит описанную ситуацию. Уточните, пожалуйста, когда возникла проблема. Не отправляйте пароли, данные карты и коды подтверждения."}, ticket.Usage{Model: "demo-rules"}, nil
+		DraftReply: "Здравствуйте! Для проверки уточните, пожалуйста, когда возникла проблема. Не отправляйте пароли, данные карты и коды подтверждения."}, ticket.Usage{Model: "demo-rules"}, nil
 }
