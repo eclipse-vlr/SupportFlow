@@ -67,6 +67,19 @@ h3 { font-size: 13px; font-weight: 600; margin: 0; }
 .queue-heading { display: flex; align-items: center; justify-content: space-between; padding: 17px 18px 12px; }
 .count { display: inline-block; margin-left: 5px; padding: 2px 6px; background: #2a3035; color: #b7c0c8; border-radius: 4px; font-size: 10px; font-weight: 400; vertical-align: middle; }
 .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 0 14px 16px; border-bottom: 1px solid var(--border); }
+.queue-search { padding: 0 14px 10px; }
+.queue-search input { font-size: 11px; padding: 9px; }
+.filters .wide { grid-column: 1 / -1; }
+.selection-note { margin: 0; padding: 10px 22px; color: #ddbd83; background: #29271f; font-size: 11px; line-height: 1.6; }
+.badge[data-status="closed"] { background: #292e32; border-color: #444d54; color: #b5bec7; }
+.closure-block { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); margin-top: 22px; padding-top: 16px; flex-wrap: wrap; }
+.closure-block p { flex: 1; min-width: 170px; margin: 0; }
+.feedback-panel { margin-top: 22px; }
+.feedback-panel > summary { font-size: 12px; font-weight: 500; }
+#feedback-reason { min-height: 78px; }
+.example-picker { margin-bottom: 22px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+.example-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.example-buttons button { padding: 7px 10px; font-size: 11px; }
 input, textarea, select { width: 100%; padding: 10px 11px; border: 1px solid #3b434b; background: #171a1d; color: #dce2e7; font-size: 12px; }
 select { cursor: pointer; }
 .filters select { padding: 8px 6px; font-size: 10px; background: #202529; color: #b6c0c8; }

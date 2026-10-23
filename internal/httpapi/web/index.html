@@ -29,9 +29,11 @@
       <div class="workspace">
         <section class="card queue" aria-label="Список обращений">
           <div class="queue-heading"><h2>Входящие <span id="queue-count" class="count">0</span></h2><button id="refresh" class="icon-button" type="button" aria-label="Обновить обращения" title="Обновить">↻</button></div>
+          <div class="queue-search"><input id="ticket-search" type="search" maxlength="200" aria-label="Поиск обращений" placeholder="Тема или сообщение…"></div>
           <div class="filters">
+            <select id="view-filter" class="wide" aria-label="Фильтр по работе оператора"><option value="open" selected>Открытые обращения</option><option value="needs_review">Ждут проверки</option><option value="closed">Закрытые обращения</option><option value="">Все обращения</option></select>
             <select id="category-filter" aria-label="Фильтр по категории"><option value="">Все категории</option><option value="billing">Оплата</option><option value="access">Доступ</option><option value="technical">Техническое</option><option value="other">Другое</option></select>
-            <select id="status-filter" aria-label="Фильтр по статусу"><option value="">Все статусы</option><option value="pending">В очереди</option><option value="processing">Обработка</option><option value="completed">Готово</option><option value="failed">Ошибка</option></select>
+            <select id="status-filter" aria-label="Фильтр по статусу"><option value="">Все статусы</option><option value="pending">В очереди</option><option value="processing">Обработка</option><option value="completed">Разбор готов</option><option value="failed">Ошибка</option></select>
           </div>
           <div id="ticket-list" class="ticket-list" aria-live="polite"></div>
           <div class="pagination"><button id="previous" class="text-button" type="button" disabled>← Назад</button><span id="page-label">1</span><button id="next" class="text-button" type="button" disabled>Далее →</button></div>
@@ -42,6 +44,7 @@
           </div>
           <div id="detail" hidden>
             <div class="detail-header"><div class="detail-meta"><span id="ticket-reference" class="reference"></span><span id="ticket-status" class="badge"></span></div><span id="ticket-date" class="muted"></span></div>
+            <p id="selection-note" class="selection-note" hidden>Эта карточка не входит в текущую выборку.</p>
             <div class="detail-body">
               <h2 id="ticket-title" class="detail-title"></h2>
               <p class="field-caption">СООБЩЕНИЕ КЛИЕНТА</p><p id="ticket-message" class="original-message"></p>
@@ -65,6 +68,22 @@
                   <button id="reload-review" class="text-button" type="button" hidden>Загрузить сохранённую версию</button>
                   <div class="actions"><button id="copy-review" type="button" class="secondary" disabled>Скопировать ответ</button><button id="save-review" type="submit" class="secondary">Сохранить черновик</button><button id="approve-review" type="button" class="primary">Подтвердить ответ <span aria-hidden="true">✓</span></button></div>
                 </form>
+                <section class="closure-block" aria-label="Завершение обращения">
+                  <p id="closure-status" class="help-text"></p>
+                  <button id="close-ticket" class="secondary" type="button" disabled>Закрыть обращение</button>
+                </section>
+                <details id="feedback-panel" class="feedback-panel">
+                  <summary id="feedback-heading">Оценка черновика</summary>
+                  <p class="help-text">Оцените исходный текст помощника, а не сохранённый ответ оператора.</p>
+                  <form id="feedback-form">
+                    <label for="feedback-rating">Помог ли черновик?</label>
+                    <select id="feedback-rating" required><option value="">Выберите оценку</option><option value="useful">Полезен</option><option value="rewritten">Пришлось переписать</option></select>
+                    <label for="feedback-reason" id="feedback-reason-label">Причина (необязательно)</label>
+                    <textarea id="feedback-reason" rows="2" maxlength="1000" placeholder="Например, не учёл детали сообщения"></textarea>
+                    <p id="feedback-status" class="help-text">Оценка ещё не сохранена.</p>
+                    <div class="actions"><button id="reload-feedback" class="text-button" type="button" hidden>Загрузить сохранённую оценку</button><button id="cancel-feedback" class="text-button" type="button" disabled>Отменить изменения</button><button id="save-feedback" type="submit" class="secondary" disabled>Сохранить оценку</button></div>
+                  </form>
+                </details>
                 <details id="review-history" class="review-history">
                   <summary>История изменений</summary>
                   <p id="history-status" class="muted">Откройте историю, чтобы посмотреть сохранённые версии.</p>
@@ -87,6 +106,11 @@
   </dialog>
   <dialog id="create-dialog" aria-labelledby="create-heading">
     <div class="dialog-heading"><div><p class="field-caption">ВХОДЯЩЕЕ СООБЩЕНИЕ</p><h2 id="create-heading">Новое обращение</h2></div><button id="close-create" class="icon-button" type="button" aria-label="Закрыть форму">×</button></div>
+    <div class="example-picker" aria-label="Примеры обращений">
+      <p class="field-caption">ПОДСТАВИТЬ ПРИМЕР</p>
+      <div class="example-buttons"><button type="button" class="secondary" data-example="billing">Оплата</button><button type="button" class="secondary" data-example="access">Доступ</button><button type="button" class="secondary" data-example="technical">Ошибка отчёта</button><button type="button" class="secondary" data-example="other">Предложение</button></div>
+      <p class="help-text">Вымышленные сообщения. Пример заполняет форму; запрос отправится после нажатия «Создать обращение».</p>
+    </div>
     <form id="create-form">
       <label for="title">Тема</label><input id="title" name="title" maxlength="200" required placeholder="Например, нет доступа после оплаты" autofocus>
       <label for="message">Сообщение клиента</label><textarea id="message" name="message" rows="6" maxlength="16384" required placeholder="Вставьте сообщение целиком — так будет проще понять проблему."></textarea>
