@@ -210,3 +210,57 @@ func TestRetriesAreBoundedAndUsageSurvives(t *testing.T) {
 		t.Fatalf("final: %+v %v", done, err)
 	}
 }
+
+func TestReducedAttemptLimitReleasesExhaustedQueueSlots(t *testing.T) {
+	for _, state := range []string{"pending", "expired", "active"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			s := testStore(t, 1)
+			ctx := t.Context()
+			input := ticket.Input{Title: "Оплата", Message: "Повтор после сетевого сбоя"}
+			if _, _, err := s.Create(ctx, input, "original"); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := s.Claim(ctx, 3, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			usage := ticket.Usage{Model: "test-model", InputTokens: 5, OutputTokens: 2}
+			switch state {
+			case "pending":
+				if err := s.Fail(ctx, claimed, "provider_timeout", true, time.Hour, usage); err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				if _, err := s.pool.Exec(ctx, "UPDATE tickets SET lease_until=now()-interval '1 second' WHERE id=$1", claimed.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.Claim(ctx, 1, time.Minute); !errors.Is(err, ticket.ErrNotFound) {
+				t.Fatalf("Claim(reduced limit) error = %v, want ErrNotFound", err)
+			}
+			item, err := s.Get(ctx, claimed.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state == "active" {
+				if item.Status != "processing" || item.Version != claimed.Version {
+					t.Fatalf("active lease changed after reducing limit: %+v", item)
+				}
+				if _, _, err := s.Create(ctx, input, "new"); !errors.Is(err, ticket.ErrQueueFull) {
+					t.Fatalf("Create(active lease) error = %v, want ErrQueueFull", err)
+				}
+				return
+			}
+			if item.Status != "failed" || item.LastError != "attempts_exhausted" || item.Attempts != 1 {
+				t.Fatalf("Get(exhausted retry) = %+v, want failed with one attempt", item)
+			}
+			if state == "pending" && item.Usage != usage {
+				t.Errorf("Get(exhausted retry).Usage = %+v, want %+v", item.Usage, usage)
+			}
+			if _, _, err := s.Create(ctx, input, "new"); err != nil {
+				t.Errorf("Create(after exhausting retry) error = %v, want free queue slot", err)
+			}
+		})
+	}
+}
