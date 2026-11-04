@@ -1,12 +1,16 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"supportflow/internal/llm"
 	"supportflow/internal/ticket"
 )
@@ -17,6 +21,7 @@ type testQueue struct {
 	complete, fail, retry bool
 	code                  string
 	usage                 ticket.Usage
+	completeErr, failErr  error
 }
 
 func (q *testQueue) Claim(context.Context, int, time.Duration) (ticket.Ticket, error) {
@@ -29,14 +34,14 @@ func (q *testQueue) Claim(context.Context, int, time.Duration) (ticket.Ticket, e
 func (q *testQueue) Complete(_ context.Context, _ ticket.Ticket, _ ticket.Analysis, u ticket.Usage) error {
 	q.complete = true
 	q.usage = u
-	return nil
+	return q.completeErr
 }
 func (q *testQueue) Fail(_ context.Context, _ ticket.Ticket, code string, retry bool, _ time.Duration, u ticket.Usage) error {
 	q.fail = true
 	q.retry = retry
 	q.code = code
 	q.usage = u
-	return nil
+	return q.failErr
 }
 
 type analyzerFunc func(context.Context, ticket.Input) (ticket.Analysis, ticket.Usage, error)
@@ -92,4 +97,56 @@ func TestShutdownJoinsBlockedAnalyzer(t *testing.T) {
 	if q.complete || q.fail {
 		t.Fatal("shutdown must leave lease for recovery")
 	}
+}
+
+func TestPersistenceFailuresDoNotRepeatProviderCalls(t *testing.T) {
+	for _, stage := range []string{"complete", "fail"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			const secret = "private-database-detail"
+			failure := &pgconn.PgError{Code: "08006", Message: secret}
+			q := &testQueue{}
+			if stage == "complete" {
+				q.completeErr = failure
+			} else {
+				q.failErr = failure
+			}
+			calls := 0
+			var output bytes.Buffer
+			w := Worker{Queue: q, Timeout: time.Second, MaxAttempts: 3,
+				Log: slog.New(slog.NewJSONHandler(&output, nil)),
+				Analyzer: analyzerFunc(func(context.Context, ticket.Input) (ticket.Analysis, ticket.Usage, error) {
+					calls++
+					if stage == "fail" {
+						return ticket.Analysis{}, ticket.Usage{InputTokens: 5}, &llm.Error{Code: "provider_timeout", Retryable: true}
+					}
+					return ticket.Analysis{Category: "billing", Summary: "Оплата", Priority: "medium",
+						PriorityReason: "Проверка", DraftReply: "Уточните дату оплаты."}, ticket.Usage{InputTokens: 5}, nil
+				})}
+			w.process(t.Context(), ticket.Ticket{ID: "test-ticket", Attempts: 1})
+			if calls != 1 || q.complete != (stage == "complete") || q.fail != (stage == "fail") || q.usage.InputTokens != 5 {
+				t.Fatalf("process(%s persistence failure): calls=%d queue=%+v, want one provider call and one persistence attempt", stage, calls, q)
+			}
+			if strings.Contains(output.String(), secret) || !strings.Contains(output.String(), `"sqlstate":"08006"`) ||
+				!strings.Contains(output.String(), `"ticket_id":"test-ticket"`) {
+				t.Errorf("process(%s) log = %s, want safe SQLSTATE and ticket ID", stage, &output)
+			}
+		})
+	}
+}
+
+func TestAnalyzerDeadlineSchedulesBoundedRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		q := &testQueue{}
+		w := Worker{Queue: q, Timeout: time.Second, MaxAttempts: 3,
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Analyzer: analyzerFunc(func(ctx context.Context, _ ticket.Input) (ticket.Analysis, ticket.Usage, error) {
+				<-ctx.Done()
+				return ticket.Analysis{}, ticket.Usage{}, &llm.Error{Code: "provider_timeout", Retryable: true}
+			})}
+		w.process(t.Context(), ticket.Ticket{Attempts: 1})
+		if !q.fail || !q.retry || q.complete || q.code != "provider_timeout" {
+			t.Fatalf("process(deadline) = %+v, want retry without completion", q)
+		}
+	})
 }

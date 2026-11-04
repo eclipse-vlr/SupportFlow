@@ -50,6 +50,26 @@ func TestYandexUsesSeparateCredentials(t *testing.T) {
 	}
 }
 
+func TestOpenAIUsesSeparateCredentials(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "openai")
+	t.Setenv("OPENAI_API_KEY", "openai-test-secret")
+	t.Setenv("OPENAI_MODEL", "test-model")
+	t.Setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("YANDEX_API_KEY", "yandex-secret-must-stay-with-yandex")
+	t.Setenv("YANDEX_FOLDER_ID", "yandex-folder")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIKey != "openai-test-secret" || cfg.Model != "test-model" || cfg.BaseURL != "https://api.openai.com/v1" || cfg.FolderID != "" {
+		t.Fatal("OpenAI must use its own credentials, model and endpoint without a Yandex folder")
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Fatal("missing OpenAI key must not fall back to the Yandex key")
+	}
+}
+
 func TestYandexEndpointValidation(t *testing.T) {
 	t.Setenv("LLM_PROVIDER", "yandex")
 	t.Setenv("YANDEX_API_KEY", "yandex-test-secret")

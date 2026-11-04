@@ -30,7 +30,7 @@ func (a *API) closure(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := a.store.SetClosed(r.Context(), id, *input.Closed, *input.ExpectedVersion)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	write(w, 200, item)
@@ -60,7 +60,7 @@ func (a *API) feedback(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := a.store.SetFeedback(r.Context(), id, input.Feedback, *input.ExpectedVersion)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	write(w, 200, item)

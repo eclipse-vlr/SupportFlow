@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"supportflow/internal/diagnostics"
 	"supportflow/internal/llm"
 	"supportflow/internal/ticket"
 )
@@ -42,7 +43,7 @@ func (w *Worker) loop(ctx context.Context) {
 		cancel()
 		if err != nil {
 			if !errors.Is(err, ticket.ErrNotFound) && ctx.Err() == nil {
-				w.Log.Error("queue claim failed")
+				w.Log.ErrorContext(ctx, "queue claim failed", "err", diagnostics.Error(err))
 			}
 			if !wait(ctx, time.Second) {
 				return
@@ -71,7 +72,7 @@ func (w *Worker) process(ctx context.Context, t ticket.Ticket) {
 	}
 	if err == nil {
 		if err = w.Queue.Complete(writeCtx, t, a, usage); err != nil {
-			w.Log.Error("ticket completion failed", "ticket_id", t.ID)
+			w.Log.ErrorContext(ctx, "ticket completion failed", "ticket_id", t.ID, "attempt", t.Attempts, "err", diagnostics.Error(err))
 		}
 		return
 	}
@@ -83,7 +84,7 @@ func (w *Worker) process(ctx context.Context, t ticket.Ticket) {
 		delay = max(providerErr.RetryAfter, time.Duration(1<<min(t.Attempts, 5))*time.Second+time.Duration(rand.IntN(1000))*time.Millisecond)
 	}
 	if err = w.Queue.Fail(writeCtx, t, code, retry, delay, usage); err != nil {
-		w.Log.Error("ticket failure persistence failed", "ticket_id", t.ID)
+		w.Log.ErrorContext(ctx, "ticket failure persistence failed", "ticket_id", t.ID, "attempt", t.Attempts, "err", diagnostics.Error(err))
 		return
 	}
 	w.Log.Warn("ticket analysis failed", "ticket_id", t.ID, "code", code, "retry", retry)

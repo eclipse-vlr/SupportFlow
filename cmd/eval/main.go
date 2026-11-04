@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -40,20 +42,35 @@ type evaluationReport struct {
 }
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(); err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	path := flag.String("dataset", "testdata/eval.json", "JSON evaluation dataset")
-	limit := flag.Int("limit", 5, "maximum number of cases; 0 means all")
-	allowDemo := flag.Bool("allow-demo", false, "evaluate keyword demo instead of an LLM (not model quality)")
-	reportPath := flag.String("report", "", "write a new JSON report with inputs, drafts and token usage; existing files are not overwritten")
-	flag.Parse()
+	return runArgs(os.Args[1:], os.Stdout)
+}
+
+func runArgs(args []string, output io.Writer) error {
+	flags := flag.NewFlagSet("eval", flag.ContinueOnError)
+	flags.SetOutput(output)
+	path := flags.String("dataset", "testdata/eval.json", "JSON evaluation dataset")
+	limit := flags.Int("limit", 5, "maximum number of cases; 0 means all")
+	allowDemo := flags.Bool("allow-demo", false, "evaluate keyword demo instead of an LLM (not model quality)")
+	reportPath := flags.String("report", "", "write a new JSON report with inputs, drafts and token usage; existing files are not overwritten")
+	minAccuracy := flags.Float64("min-accuracy", 0, "minimum classification accuracy in percent (0-100); provider failures always fail")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments")
+	}
 	if *limit < 0 {
 		return fmt.Errorf("limit must be non-negative")
+	}
+	if math.IsNaN(*minAccuracy) || math.IsInf(*minAccuracy, 0) || *minAccuracy < 0 || *minAccuracy > 100 {
+		return fmt.Errorf("min-accuracy must be between 0 and 100")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -101,8 +118,8 @@ func run() error {
 		}
 		defer reportFile.Close()
 	}
-	fmt.Printf("provider=%s cases=%d (classification only; reply correctness requires human review)\n", cfg.Provider, count)
-	report := evaluate(context.Background(), analyzer, cases[:count], cfg.LLMTimeout, os.Stdout)
+	fmt.Fprintf(output, "provider=%s cases=%d (classification only; reply correctness requires human review)\n", cfg.Provider, count)
+	report := evaluate(context.Background(), analyzer, cases[:count], cfg.LLMTimeout, output)
 	report.Provider = cfg.Provider
 	if reportFile != nil {
 		encoder := json.NewEncoder(reportFile)
@@ -114,9 +131,13 @@ func run() error {
 			return fmt.Errorf("close evaluation report: %w", err)
 		}
 	}
-	fmt.Printf("accuracy=%d/%d (%.1f%%) failures=%d reported_tokens=%d\n", report.Correct, count, 100*float64(report.Correct)/float64(count), report.Failures, report.InputTokens+report.OutputTokens)
+	accuracy := 100 * float64(report.Correct) / float64(count)
+	fmt.Fprintf(output, "accuracy=%d/%d (%.1f%%) failures=%d reported_tokens=%d\n", report.Correct, count, accuracy, report.Failures, report.InputTokens+report.OutputTokens)
 	if report.Failures > 0 {
 		return fmt.Errorf("evaluation had provider failures")
+	}
+	if accuracy < *minAccuracy {
+		return fmt.Errorf("classification accuracy %.1f%% is below required %.1f%%", accuracy, *minAccuracy)
 	}
 	return nil
 }

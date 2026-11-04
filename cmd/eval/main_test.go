@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,5 +54,58 @@ func TestEvaluationReportIncludesFailuresAndDrafts(t *testing.T) {
 	}
 	if strings.Contains(string(data), "private-folder") || !strings.Contains(string(data), `"model":"aliceai-llm-flash"`) {
 		t.Errorf("evaluate report JSON = %s, want short model name without folder ID", data)
+	}
+}
+
+func TestAccuracyThresholdControlsResultAndPreservesReport(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "demo")
+	directory := t.TempDir()
+	dataset := filepath.Join(directory, "cases.json")
+	cases := []evaluationCase{{Input: ticket.Input{Title: "Спасибо", Message: "Спасибо за помощь"}, ExpectedCategory: "billing"}}
+	data, err := json.Marshal(cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dataset, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		threshold string
+		wantError bool
+	}{
+		{"0", false}, {"100", true}, {"-1", true}, {"101", true}, {"NaN", true}, {"+Inf", true},
+	} {
+		t.Run(tc.threshold, func(t *testing.T) {
+			reportPath := filepath.Join(t.TempDir(), "report.json")
+			err := runArgs([]string{"-allow-demo", "-dataset", dataset, "-report", reportPath, "-min-accuracy", tc.threshold}, io.Discard)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("runArgs(min-accuracy=%s) error = %v, wantError=%v", tc.threshold, err, tc.wantError)
+			}
+			if tc.threshold != "100" {
+				return
+			}
+			data, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report evaluationReport
+			if err := json.Unmarshal(data, &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Correct != 0 || report.Total != 1 || report.Failures != 0 || report.Cases[0].Analysis == nil {
+				t.Errorf("report after threshold failure = %+v, want saved misclassification", report)
+			}
+		})
+	}
+	cases[0].ExpectedCategory = "other"
+	data, err = json.Marshal(cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dataset, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runArgs([]string{"-allow-demo", "-dataset", dataset, "-min-accuracy", "100"}, io.Discard); err != nil {
+		t.Errorf("runArgs(100%% accuracy) error = %v, want success", err)
 	}
 }

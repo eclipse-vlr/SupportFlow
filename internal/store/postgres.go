@@ -243,7 +243,7 @@ WHERE ticket_id=$1 AND ($2::bigint=0 OR revision<$2) ORDER BY revision DESC LIMI
 func (s *Store) Claim(ctx context.Context, maxAttempts int, lease time.Duration) (ticket.Ticket, error) {
 	_, err := s.pool.Exec(ctx, `UPDATE tickets SET status='failed',lease_until=NULL,
 last_error='attempts_exhausted',version=version+1,updated_at=now()
-WHERE status='processing' AND lease_until<=now() AND attempts >= $1`, maxAttempts)
+WHERE attempts >= $1 AND (status='pending' OR (status='processing' AND lease_until<=now()))`, maxAttempts)
 	if err != nil {
 		return ticket.Ticket{}, err
 	}

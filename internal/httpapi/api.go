@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"supportflow/internal/diagnostics"
 	"supportflow/internal/ticket"
 )
 
@@ -104,7 +105,7 @@ func (a *API) create(w http.ResponseWriter, r *http.Request) {
 	}
 	t, created, err := a.store.Create(r.Context(), input, key)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	w.Header().Set("Location", "/api/v1/tickets/"+t.ID)
@@ -123,7 +124,7 @@ func (a *API) get(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := a.store.Get(r.Context(), id)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	write(w, 200, t)
@@ -167,7 +168,7 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.store.List(r.Context(), ticket.ListFilter{Category: category, Status: status, Search: search, View: view}, limit, offset)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	write(w, 200, map[string]any{"items": items, "limit": limit, "offset": offset})
@@ -185,7 +186,7 @@ func (a *API) source(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := a.store.Get(r.Context(), id)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	if item.Analysis != nil {
@@ -223,7 +224,7 @@ func (a *API) review(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := a.store.Review(r.Context(), id, input.Review, *input.ExpectedRevision)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	write(w, 200, t)
@@ -254,7 +255,7 @@ func (a *API) history(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.store.History(r.Context(), id, before, limit)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	var next int64
@@ -324,7 +325,7 @@ func decode(w http.ResponseWriter, r *http.Request, dest any) bool {
 	return true
 }
 
-func (a *API) failure(w http.ResponseWriter, err error) {
+func (a *API) failure(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ticket.ErrNotFound):
 		problem(w, 404, "ticket_not_found")
@@ -342,7 +343,8 @@ func (a *API) failure(w http.ResponseWriter, err error) {
 		w.Header().Set("Retry-After", "10")
 		problem(w, 429, "queue_full")
 	default:
-		a.log.Error("repository operation failed")
+		a.log.ErrorContext(r.Context(), "repository operation failed", "method", r.Method,
+			"route", r.Pattern, "ticket_id", r.PathValue("id"), "err", diagnostics.Error(err))
 		problem(w, 500, "internal_error")
 	}
 }
