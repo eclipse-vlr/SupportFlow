@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"supportflow/internal/billing"
 	"supportflow/internal/knowledge"
 	"supportflow/internal/ticket"
 )
@@ -36,6 +37,12 @@ type Client struct {
 	baseURL, key, model string
 	maxTokens           int
 	folderID            string
+	ledger              billing.Ledger
+	policy              billing.Policy
+}
+
+func (c *Client) SetBilling(ledger billing.Ledger, policy billing.Policy) {
+	c.ledger, c.policy = ledger, policy
 }
 
 func New(baseURL, key, model string, maxTokens int, timeout time.Duration) *Client {
@@ -115,6 +122,7 @@ func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analys
 		}
 		total.InputTokens += usage.InputTokens
 		total.OutputTokens += usage.OutputTokens
+		total.Unknown = total.Unknown || usage.Unknown
 		if err != nil {
 			return ticket.Analysis{}, total, err
 		}
@@ -131,7 +139,8 @@ func (c *Client) Analyze(ctx context.Context, input ticket.Input) (ticket.Analys
 	return ticket.Analysis{}, total, &Error{Code: "provider_reply_needs_editing"}
 }
 
-func (c *Client) analyze(ctx context.Context, input ticket.Input, sources []ticket.Source, feedback string) (ticket.Analysis, ticket.Usage, error) {
+func (c *Client) analyze(ctx context.Context, input ticket.Input, sources []ticket.Source, feedback string) (analysisResult ticket.Analysis, usageResult ticket.Usage, resultErr error) {
+	usageResult.Unknown = true
 	properties := map[string]any{}
 	for _, name := range []string{"category", "summary", "priority", "priority_reason", "draft_reply"} {
 		properties[name] = map[string]any{"type": "string"}
@@ -167,33 +176,62 @@ func (c *Client) analyze(ctx context.Context, input ticket.Input, sources []tick
 		req.Header.Set("x-folder-id", c.folderID)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	requestID := ""
+	if c.ledger != nil {
+		owner := billing.OwnerFrom(ctx)
+		// UTF-8 bytes plus protocol allowance conservatively bound input;
+		// configured rates remain an estimate, not a provider billing cap.
+		if len(body) > 256<<10 || c.policy.Validate() != nil {
+			return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "accounting_unavailable"}
+		}
+		reserved := (int64(len(body))+4096)*c.policy.InputRate + int64(c.maxTokens)*c.policy.OutputRate
+		id, err := c.ledger.ReserveAI(ctx, c.policy, billing.Request{TicketID: owner.ID, Attempt: owner.Attempt, Model: c.model, Reserve: reserved, InputRate: c.policy.InputRate, OutputRate: c.policy.OutputRate})
+		if err != nil {
+			code := "accounting_unavailable"
+			if errors.Is(err, billing.ErrBudget) {
+				code = "ai_budget_exhausted"
+			}
+			return ticket.Analysis{}, ticket.Usage{}, &Error{Code: code}
+		}
+		req.Header.Set("X-Client-Request-Id", id)
+		defer func() {
+			if err := billing.Finish(c.ledger, id, requestID, usageResult); err != nil {
+				usageResult.Unknown = true
+				// Keep a useful draft; the pending durable hold stays charged.
+			}
+		}()
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		code := "provider_unavailable"
 		if ctx.Err() != nil {
 			code = "provider_timeout"
 		}
-		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: code, Retryable: true}
+		return ticket.Analysis{}, ticket.Usage{Unknown: true}, &Error{Code: code, Retryable: true}
 	}
 	defer resp.Body.Close()
+	requestID = resp.Header.Get("x-request-id")
+	if requestID == "" {
+		requestID = resp.Header.Get("x-server-trace-id")
+	}
 	if resp.StatusCode != http.StatusOK {
 		retry := resp.StatusCode == 429 || resp.StatusCode == 408 || resp.StatusCode >= 500
-		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: fmt.Sprintf("provider_http_%d", resp.StatusCode), Retryable: retry, RetryAfter: retryAfter(resp.Header.Get("Retry-After"))}
+		return ticket.Analysis{}, ticket.Usage{Unknown: true}, &Error{Code: fmt.Sprintf("provider_http_%d", resp.StatusCode), Retryable: retry, RetryAfter: retryAfter(resp.Header.Get("Retry-After"))}
 	}
 	const maxBody = 256 * 1024
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "provider_read_failed", Retryable: true}
+		return ticket.Analysis{}, ticket.Usage{Unknown: true}, &Error{Code: "provider_read_failed", Retryable: true}
 	}
 	if len(data) > maxBody {
-		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "provider_response_too_large"}
+		return ticket.Analysis{}, ticket.Usage{Unknown: true}, &Error{Code: "provider_response_too_large"}
 	}
 	var response struct {
 		Status string `json:"status"`
 		Model  string `json:"model"`
-		Usage  struct {
-			Input  int64 `json:"input_tokens"`
-			Output int64 `json:"output_tokens"`
+		Usage  *struct {
+			Input  *int64 `json:"input_tokens"`
+			Output *int64 `json:"output_tokens"`
 		} `json:"usage"`
 		Output []struct {
 			Type    string `json:"type"`
@@ -204,14 +242,18 @@ func (c *Client) analyze(ctx context.Context, input ticket.Input, sources []tick
 		} `json:"output"`
 	}
 	if err = json.Unmarshal(data, &response); err != nil {
-		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "provider_invalid_json"}
+		return ticket.Analysis{}, ticket.Usage{Unknown: true}, &Error{Code: "provider_invalid_json"}
 	}
-	usage := ticket.Usage{Model: response.Model, InputTokens: response.Usage.Input, OutputTokens: response.Usage.Output}
+	usage := ticket.Usage{Model: response.Model, Unknown: true}
+	if response.Usage != nil && response.Usage.Input != nil && response.Usage.Output != nil {
+		usage.InputTokens, usage.OutputTokens = *response.Usage.Input, *response.Usage.Output
+		usage.Unknown = false
+	}
 	if usage.Model == "" {
 		usage.Model = c.model
 	}
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 {
-		return ticket.Analysis{}, ticket.Usage{}, &Error{Code: "provider_invalid_usage"}
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.InputTokens > 1_000_000 || usage.OutputTokens > 1_000_000 {
+		return ticket.Analysis{}, ticket.Usage{Unknown: true}, &Error{Code: "provider_invalid_usage"}
 	}
 	if response.Status != "completed" {
 		return ticket.Analysis{}, usage, &Error{Code: "provider_incomplete"}

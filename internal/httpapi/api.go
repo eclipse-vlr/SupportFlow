@@ -48,6 +48,22 @@ var keyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 func New(store Repository, log *slog.Logger, provider string) http.Handler {
 	a := &API{store: store, log: log, provider: provider}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		stats, ok := store.(interface {
+			AIStats(context.Context) (string, error)
+		})
+		if !ok {
+			problem(w, 503, "metrics_unavailable")
+			return
+		}
+		data, err := stats.AIStats(r.Context())
+		if err != nil {
+			problem(w, 503, "metrics_unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = w.Write([]byte(data))
+	})
 	mux.HandleFunc("POST /api/v1/tickets", a.create)
 	mux.HandleFunc("GET /api/v1/tickets", a.list)
 	mux.HandleFunc("GET /api/v1/tickets/{id}", a.get)

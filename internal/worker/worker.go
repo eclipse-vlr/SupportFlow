@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"supportflow/internal/billing"
 	"supportflow/internal/diagnostics"
 	"supportflow/internal/llm"
 	"supportflow/internal/ticket"
@@ -56,7 +57,7 @@ func (w *Worker) loop(ctx context.Context) {
 
 func (w *Worker) process(ctx context.Context, t ticket.Ticket) {
 	callCtx, cancel := context.WithTimeout(ctx, w.Timeout)
-	a, usage, err := w.Analyzer.Analyze(callCtx, t.Input)
+	a, usage, err := w.Analyzer.Analyze(billing.WithOwner(callCtx, t.ID, t.Attempts), t.Input)
 	cancel()
 	// On process cancellation leave the durable lease for recovery, without
 	// calling the provider again or claiming that the remote request was free.
