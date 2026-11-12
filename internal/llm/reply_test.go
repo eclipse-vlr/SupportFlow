@@ -246,7 +246,7 @@ func TestRewriteRejectsUsageOverflow(t *testing.T) {
 	defer client.Close()
 	_, usage, err := client.Analyze(t.Context(), ticket.Input{})
 	var providerErr *Error
-	if !errors.As(err, &providerErr) || providerErr.Code != "provider_invalid_usage" || usage.InputTokens != math.MaxInt64 || usage.OutputTokens != 9 {
+	if !errors.As(err, &providerErr) || providerErr.Code != "provider_invalid_usage" || !usage.Unknown || usage.InputTokens != 0 || calls.Load() != 1 {
 		t.Fatalf("usage=%+v err=%v, want overflow rejected without wrapping counters", usage, err)
 	}
 }

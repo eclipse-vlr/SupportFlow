@@ -101,6 +101,7 @@ func (a Analysis) Validate() error {
 }
 
 type Usage struct {
+	Unknown      bool   `json:"unknown"`
 	Model        string `json:"model"`
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`

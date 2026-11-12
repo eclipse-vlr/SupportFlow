@@ -194,6 +194,8 @@ async function refresh() {
 }
 
 function failureMessage(code) {
+  if (code === 'ai_budget_exhausted') return 'Достигнут дневной лимит AI или предел расходов на обращение. Новые платные запросы остановлены.';
+  if (code === 'accounting_unavailable') return 'Учёт расходов недоступен. Платный запрос остановлен; проверьте БД и настройки бюджета.';
   if (code === 'provider_http_402') {
     return 'Недостаточно средств на API-балансе провайдера. Пополните баланс и создайте новое обращение.';
   }
@@ -314,6 +316,7 @@ function renderDetail(ticket, {preserveReview = false, preserveFeedback = false}
   syncActions();
   $('usage').textContent = ticket.usage.model === 'demo-rules'
     ? 'Демо: анализ по ключевым словам, без обращения к модели.'
+    : ticket.usage.unknown ? 'Расход неизвестен · известные токены: ' + ticket.usage.input_tokens + ' вход / ' + ticket.usage.output_tokens + ' выход'
     : ticket.usage.model.split('/').pop() + ' · Токены: ' + ticket.usage.input_tokens + ' вход / ' + ticket.usage.output_tokens + ' выход';
   const historyKey = ticket.id + ':' + ticket.review_revision;
   if (state.historyKey !== historyKey) {

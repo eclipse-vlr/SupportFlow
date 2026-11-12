@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"supportflow/internal/billing"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	FolderID                                                string
 	Workers, MaxAttempts, MaxOutputTokens, MaxQueued        int
 	LLMTimeout                                              time.Duration
+	Billing                                                 billing.Policy
 }
 
 func Load() (Config, error) {
@@ -78,6 +80,24 @@ func Load() (Config, error) {
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")) {
 		return Config{}, fmt.Errorf("%s requires HTTPS (HTTP is allowed only on loopback)", baseURLName)
+	}
+	if c.Provider != "demo" {
+		for _, setting := range []struct {
+			name   string
+			target *int64
+		}{
+			{"AI_DAILY_LIMIT_NANOUNITS", &c.Billing.Daily}, {"AI_TICKET_LIMIT_NANOUNITS", &c.Billing.PerTicket},
+			{"AI_INPUT_RATE_NANOUNITS", &c.Billing.InputRate}, {"AI_OUTPUT_RATE_NANOUNITS", &c.Billing.OutputRate},
+		} {
+			v, err := strconv.ParseInt(os.Getenv(setting.name), 10, 64)
+			if err != nil || v <= 0 {
+				return Config{}, fmt.Errorf("%s must be an explicit positive integer", setting.name)
+			}
+			*setting.target = v
+		}
+		if err := c.Billing.Validate(); err != nil {
+			return Config{}, errors.New("invalid AI billing limits or rates")
+		}
 	}
 	return c, nil
 }

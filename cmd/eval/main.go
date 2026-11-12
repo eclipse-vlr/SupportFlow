@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,33 +13,44 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"supportflow/internal/billing"
 	"supportflow/internal/config"
 	"supportflow/internal/llm"
+	"supportflow/internal/store"
 	"supportflow/internal/ticket"
 )
 
 type evaluationCase struct {
 	ticket.Input
-	ExpectedCategory string `json:"expected_category"`
+	ExpectedCategory string   `json:"expected_category"`
+	ExpectedPriority string   `json:"expected_priority,omitempty"`
+	ForbiddenDraft   []string `json:"forbidden_draft,omitempty"`
 }
 
 type caseResult struct {
 	evaluationCase
-	Analysis   *ticket.Analysis `json:"analysis,omitempty"`
-	Usage      ticket.Usage     `json:"usage"`
-	DurationMS int64            `json:"duration_ms"`
-	Error      string           `json:"error,omitempty"`
+	Analysis      *ticket.Analysis `json:"analysis,omitempty"`
+	Usage         ticket.Usage     `json:"usage"`
+	DurationMS    int64            `json:"duration_ms"`
+	Error         string           `json:"error,omitempty"`
+	ForbiddenHits []string         `json:"forbidden_hits,omitempty"`
+	ManualReview  string           `json:"manual_review"`
 }
 
 type evaluationReport struct {
-	CreatedAt    time.Time    `json:"created_at"`
-	Provider     string       `json:"provider"`
-	Correct      int          `json:"correct"`
-	Total        int          `json:"total"`
-	Failures     int          `json:"failures"`
-	InputTokens  int64        `json:"input_tokens"`
-	OutputTokens int64        `json:"output_tokens"`
-	Cases        []caseResult `json:"cases"`
+	CreatedAt         time.Time    `json:"created_at"`
+	Provider          string       `json:"provider"`
+	Correct           int          `json:"correct"`
+	Total             int          `json:"total"`
+	Failures          int          `json:"failures"`
+	InputTokens       int64        `json:"input_tokens"`
+	OutputTokens      int64        `json:"output_tokens"`
+	Cases             []caseResult `json:"cases"`
+	PriorityCorrect   int          `json:"priority_correct"`
+	PriorityTotal     int          `json:"priority_total"`
+	DraftRuleFailures int          `json:"draft_rule_failures"`
+	UnknownCalls      int          `json:"unknown_cases"`
 }
 
 func main() {
@@ -60,6 +72,7 @@ func runArgs(args []string, output io.Writer) error {
 	allowDemo := flags.Bool("allow-demo", false, "evaluate keyword demo instead of an LLM (not model quality)")
 	reportPath := flags.String("report", "", "write a new JSON report with inputs, drafts and token usage; existing files are not overwritten")
 	minAccuracy := flags.Float64("min-accuracy", 0, "minimum classification accuracy in percent (0-100); provider failures always fail")
+	checkDraft := flags.Bool("check-draft-rules", false, "fail on dataset forbidden phrases; human review is still required")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -96,6 +109,18 @@ func runArgs(args []string, output io.Writer) error {
 			client = llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
 		}
 		defer client.Close()
+		startup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		pool, err := pgxpool.New(startup, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		repository := store.New(pool, cfg.MaxQueued)
+		if err = repository.Migrate(startup); err != nil {
+			return err
+		}
+		client.SetBilling(repository, cfg.Billing)
 		analyzer = client
 	}
 	count := len(cases)
@@ -136,6 +161,10 @@ func runArgs(args []string, output io.Writer) error {
 	if report.Failures > 0 {
 		return fmt.Errorf("evaluation had provider failures")
 	}
+	fmt.Fprintf(output, "priority=%d/%d draft_rule_failures=%d unknown_usage_cases=%d human_review=pending\n", report.PriorityCorrect, report.PriorityTotal, report.DraftRuleFailures, report.UnknownCalls)
+	if *checkDraft && report.DraftRuleFailures > 0 {
+		return fmt.Errorf("draft violated dataset rules")
+	}
 	if accuracy < *minAccuracy {
 		return fmt.Errorf("classification accuracy %.1f%% is below required %.1f%%", accuracy, *minAccuracy)
 	}
@@ -147,7 +176,7 @@ func evaluate(ctx context.Context, analyzer llm.Analyzer, cases []evaluationCase
 	for index, item := range cases {
 		started := time.Now()
 		callCtx, cancel := context.WithTimeout(ctx, timeout)
-		result, usage, callErr := analyzer.Analyze(callCtx, item.Input)
+		result, usage, callErr := analyzer.Analyze(billing.WithOwner(callCtx, "eval-"+rand.Text(), 1), item.Input)
 		cancel()
 		// Yandex model URIs contain the local folder ID; reports only need the model name.
 		if strings.HasPrefix(usage.Model, "gpt://") {
@@ -156,6 +185,10 @@ func evaluate(ctx context.Context, analyzer llm.Analyzer, cases []evaluationCase
 		report.InputTokens += usage.InputTokens
 		report.OutputTokens += usage.OutputTokens
 		entry := caseResult{evaluationCase: item, Usage: usage, DurationMS: time.Since(started).Milliseconds()}
+		entry.ManualReview = "pending"
+		if usage.Unknown {
+			report.UnknownCalls++
+		}
 		if callErr != nil {
 			report.Failures++
 			entry.Error = callErr.Error()
@@ -164,6 +197,20 @@ func evaluate(ctx context.Context, analyzer llm.Analyzer, cases []evaluationCase
 			continue
 		}
 		entry.Analysis = &result
+		if item.ExpectedPriority != "" {
+			report.PriorityTotal++
+			if result.Priority == item.ExpectedPriority {
+				report.PriorityCorrect++
+			}
+		}
+		for _, phrase := range item.ForbiddenDraft {
+			if strings.Contains(strings.ToLower(result.DraftReply), strings.ToLower(phrase)) {
+				entry.ForbiddenHits = append(entry.ForbiddenHits, phrase)
+			}
+		}
+		if len(entry.ForbiddenHits) > 0 {
+			report.DraftRuleFailures++
+		}
 		report.Cases = append(report.Cases, entry)
 		if result.Category == item.ExpectedCategory {
 			report.Correct++

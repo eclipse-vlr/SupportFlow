@@ -68,6 +68,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 			client = llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxOutputTokens, cfg.LLMTimeout)
 		}
 		defer client.Close()
+		client.SetBilling(repository, cfg.Billing)
 		analyzer = client
 	}
 	listener, err := net.Listen("tcp", cfg.HTTPAddr)

@@ -28,6 +28,7 @@ func TestConfigurationRejectsUnsafeSettings(t *testing.T) {
 }
 
 func TestYandexUsesSeparateCredentials(t *testing.T) {
+	setBudget(t)
 	t.Setenv("LLM_PROVIDER", "yandex")
 	t.Setenv("OPENAI_API_KEY", "openai-secret-must-stay-with-openai")
 	t.Setenv("OPENAI_MODEL", "openai-model")
@@ -51,6 +52,7 @@ func TestYandexUsesSeparateCredentials(t *testing.T) {
 }
 
 func TestOpenAIUsesSeparateCredentials(t *testing.T) {
+	setBudget(t)
 	t.Setenv("LLM_PROVIDER", "openai")
 	t.Setenv("OPENAI_API_KEY", "openai-test-secret")
 	t.Setenv("OPENAI_MODEL", "test-model")
@@ -99,5 +101,12 @@ func TestYandexRequiresFolderAndModelName(t *testing.T) {
 	t.Setenv("YANDEX_MODEL", "gpt://different-folder/aliceai-llm-flash")
 	if _, err := Load(); err == nil {
 		t.Fatal("model from another folder accepted")
+	}
+}
+
+func setBudget(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"AI_DAILY_LIMIT_NANOUNITS", "AI_TICKET_LIMIT_NANOUNITS", "AI_INPUT_RATE_NANOUNITS", "AI_OUTPUT_RATE_NANOUNITS"} {
+		t.Setenv(name, "1000000")
 	}
 }

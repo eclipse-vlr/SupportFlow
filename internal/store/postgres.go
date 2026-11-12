@@ -22,6 +22,12 @@ var reviewHistorySchema string
 //go:embed migrations/003_operator_workflow.sql
 var operatorWorkflowSchema string
 
+//go:embed migrations/004_ai_billing.sql
+var billingSchema string
+
+//go:embed migrations/005_ai_observations.sql
+var observationsSchema string
+
 type Store struct {
 	pool      *pgxpool.Pool
 	maxQueued int
@@ -48,7 +54,7 @@ version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); e
 	if err = tx.QueryRow(ctx, "SELECT COALESCE(max(version),0) FROM schema_migrations").Scan(&current); err != nil {
 		return err
 	}
-	migrations := []string{schema, reviewHistorySchema, operatorWorkflowSchema}
+	migrations := []string{schema, reviewHistorySchema, operatorWorkflowSchema, billingSchema, observationsSchema}
 	if current > len(migrations) {
 		return errors.New("database schema is newer than this application")
 	}
@@ -68,13 +74,13 @@ version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); e
 }
 
 const columns = `id::text, title, message, status, attempts, analysis, review,
-model, input_tokens, output_tokens, last_error, created_at, updated_at, review_revision,version,closed_at,feedback`
+model, input_tokens, output_tokens, (usage_unknown OR EXISTS(SELECT 1 FROM ai_calls c WHERE c.ticket_id=tickets.id::text AND c.state<>'recorded')), last_error, created_at, updated_at, review_revision,version,closed_at,feedback`
 
 func scan(row pgx.Row) (ticket.Ticket, error) {
 	var t ticket.Ticket
 	var analysis, review, feedback []byte
 	err := row.Scan(&t.ID, &t.Title, &t.Message, &t.Status, &t.Attempts, &analysis, &review,
-		&t.Usage.Model, &t.Usage.InputTokens, &t.Usage.OutputTokens, &t.LastError, &t.CreatedAt, &t.UpdatedAt, &t.ReviewRevision, &t.Version, &t.ClosedAt, &feedback)
+		&t.Usage.Model, &t.Usage.InputTokens, &t.Usage.OutputTokens, &t.Usage.Unknown, &t.LastError, &t.CreatedAt, &t.UpdatedAt, &t.ReviewRevision, &t.Version, &t.ClosedAt, &feedback)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ticket.ErrNotFound
 	}
@@ -258,7 +264,7 @@ FROM next WHERE t.id=next.id RETURNING `+qualifiedColumns(), maxAttempts, lease.
 
 func qualifiedColumns() string {
 	return `t.id::text,t.title,t.message,t.status,t.attempts,t.analysis,t.review,
-t.model,t.input_tokens,t.output_tokens,t.last_error,t.created_at,t.updated_at,t.review_revision,t.version,t.closed_at,t.feedback`
+t.model,t.input_tokens,t.output_tokens,(t.usage_unknown OR EXISTS(SELECT 1 FROM ai_calls c WHERE c.ticket_id=t.id::text AND c.state<>'recorded')),t.last_error,t.created_at,t.updated_at,t.review_revision,t.version,t.closed_at,t.feedback`
 }
 
 func (s *Store) Complete(ctx context.Context, t ticket.Ticket, a ticket.Analysis, u ticket.Usage) error {
@@ -268,8 +274,8 @@ func (s *Store) Complete(ctx context.Context, t ticket.Ticket, a ticket.Analysis
 	}
 	result, err := s.pool.Exec(ctx, `UPDATE tickets SET status='completed',analysis=$3,
 model=$4,input_tokens=input_tokens+$5,output_tokens=output_tokens+$6,
-last_error='',lease_until=NULL,version=version+1,updated_at=now()
-WHERE id=$1 AND attempts=$2 AND status='processing' AND lease_until>now()`, t.ID, t.Attempts, data, u.Model, u.InputTokens, u.OutputTokens)
+usage_unknown=CASE WHEN attempts=1 THEN $7 ELSE usage_unknown OR $7 END,last_error='',lease_until=NULL,version=version+1,updated_at=now()
+WHERE id=$1 AND attempts=$2 AND status='processing' AND lease_until>now()`, t.ID, t.Attempts, data, u.Model, u.InputTokens, u.OutputTokens, u.Unknown)
 	if err != nil {
 		return err
 	}
@@ -286,8 +292,8 @@ func (s *Store) Fail(ctx context.Context, t ticket.Ticket, code string, retry bo
 	}
 	result, err := s.pool.Exec(ctx, `UPDATE tickets SET status=$3,last_error=$4,lease_until=NULL,
 available_at=now()+($5 * interval '1 millisecond'),version=version+1,updated_at=now(),
-model=$6,input_tokens=input_tokens+$7,output_tokens=output_tokens+$8
-WHERE id=$1 AND attempts=$2 AND status='processing' AND lease_until>now()`, t.ID, t.Attempts, status, code, delay.Milliseconds(), u.Model, u.InputTokens, u.OutputTokens)
+model=$6,input_tokens=input_tokens+$7,output_tokens=output_tokens+$8,usage_unknown=CASE WHEN attempts=1 THEN $9 ELSE usage_unknown OR $9 END
+WHERE id=$1 AND attempts=$2 AND status='processing' AND lease_until>now()`, t.ID, t.Attempts, status, code, delay.Milliseconds(), u.Model, u.InputTokens, u.OutputTokens, u.Unknown)
 	if err != nil {
 		return err
 	}
