@@ -44,10 +44,14 @@ func TestBillingUnknownHoldsAcrossDaysAndPerTicket(t *testing.T) {
 	s := testStore(t, 10)
 	ctx := t.Context()
 	p := billing.Policy{Daily: 100, PerTicket: 30, InputRate: 1, OutputRate: 1}
-	request := billing.Request{TicketID: "ticket", Model: "test", Reserve: 25, InputRate: 1, OutputRate: 1}
+	request := billing.Request{TicketID: "ticket", Model: "test", PromptVersion: "test-prompt-v3", Reserve: 25, InputRate: 1, OutputRate: 1}
 	id, err := s.ReserveAI(ctx, p, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var version string
+	if err = s.pool.QueryRow(ctx, `SELECT prompt_version FROM ai_calls WHERE id=$1`, id).Scan(&version); err != nil || version != request.PromptVersion {
+		t.Fatalf("stored prompt version=%q err=%v", version, err)
 	}
 	if err := billing.Finish(s, id, "provider-id", ticket.Usage{Unknown: true}); err != nil {
 		t.Fatal(err)

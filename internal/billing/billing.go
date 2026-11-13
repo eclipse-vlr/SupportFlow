@@ -31,7 +31,7 @@ func (p Policy) Validate() error {
 }
 
 type Request struct {
-	TicketID, Model                string
+	TicketID, Model, PromptVersion string
 	Attempt                        int
 	Reserve, InputRate, OutputRate int64
 }
