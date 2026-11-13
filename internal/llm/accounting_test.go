@@ -16,10 +16,12 @@ type ledgerProbe struct {
 	reserved, finished int
 	usage              ticket.Usage
 	fail               bool
+	promptVersion      string
 }
 
-func (p *ledgerProbe) ReserveAI(context.Context, billing.Policy, billing.Request) (string, error) {
+func (p *ledgerProbe) ReserveAI(_ context.Context, _ billing.Policy, request billing.Request) (string, error) {
 	p.reserved++
+	p.promptVersion = request.PromptVersion
 	if p.fail {
 		return "", billing.ErrBudget
 	}
@@ -47,6 +49,9 @@ func TestMissingUsageKeepsUsefulDraftAndUnknownHold(t *testing.T) {
 		_, hasOutput := m["output_tokens"]
 		if err != nil || a.DraftReply == "" || u.Unknown == hasOutput || p.usage.Unknown != u.Unknown || p.reserved != 1 || p.finished != 1 {
 			t.Fatalf("analysis=%+v usage=%+v probe=%+v err=%v", a, u, p, err)
+		}
+		if p.promptVersion != promptVersion || p.promptVersion == "" {
+			t.Fatalf("ledger prompt version = %q", p.promptVersion)
 		}
 		c.Close()
 		srv.Close()

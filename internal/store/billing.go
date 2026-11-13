@@ -57,7 +57,7 @@ func (s *Store) ReserveAI(ctx context.Context, policy billing.Policy, request bi
 		return "", billing.ErrBudget
 	}
 	id := rand.Text()
-	_, err = tx.Exec(ctx, `INSERT INTO ai_calls(id,ticket_id,attempt,model,reserved,input_rate,output_rate) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, request.TicketID, request.Attempt, request.Model, request.Reserve, request.InputRate, request.OutputRate)
+	_, err = tx.Exec(ctx, `INSERT INTO ai_calls(id,ticket_id,attempt,model,reserved,input_rate,output_rate,prompt_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, request.TicketID, request.Attempt, request.Model, request.Reserve, request.InputRate, request.OutputRate, request.PromptVersion)
 	if err != nil {
 		return "", err
 	}
